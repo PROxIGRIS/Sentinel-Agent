@@ -106,11 +106,12 @@ import unicodedata
 import difflib
 import urllib.request
 import hashlib
+import shutil
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Iterable
 
 import psutil
 
@@ -3313,31 +3314,175 @@ def sentinel_watchdog() -> None:
 # =====================================================================
 # MAIN ENTRY POINT
 # =====================================================================
+RESET = "\033[0m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+
+RED = "\033[31m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+BLUE = "\033[34m"
+MAGENTA = "\033[35m"
+CYAN = "\033[36m"
+WHITE = "\033[37m"
+
+BRIGHT_WHITE = "\033[97m"
+BRIGHT_CYAN = "\033[96m"
+BRIGHT_RED = "\033[91m"
+BRIGHT_YELLOW = "\033[93m"
+BRIGHT_GREEN = "\033[92m"
+BRIGHT_MAGENTA = "\033[95m"
+
+
+def _c(text: str, *styles: str) -> str:
+    return "".join(styles) + text + RESET
+
+
+def _term_width(default: int = 88) -> int:
+    return max(default, shutil.get_terminal_size((default, 24)).columns)
+
+
+def _line(char: str = "═", width: int = 88) -> str:
+    return char * width
+
+
+def _center(text: str, width: int) -> str:
+    return text.center(width)
+
+
+def _type_print(text: str, delay: float = 0.007, end: str = "\n") -> None:
+    for ch in text:
+        sys.stdout.write(ch)
+        sys.stdout.flush()
+        time.sleep(delay)
+    sys.stdout.write(end)
+    sys.stdout.flush()
+
+
+def _box_line(left: str, right: str, width: int, style: str = WHITE) -> None:
+    inner = width - 4
+    content = f" {left} {right}"
+    print(_c("║ " + content.ljust(inner) + " ║", style))
+
+
+def _section_title(title: str, width: int) -> None:
+    print(_c("╠" + "═" * (width - 2) + "╣", BRIGHT_CYAN))
+    print(_c("║" + _center(title, width - 2) + "║", BOLD, BRIGHT_WHITE))
+    print(_c("╠" + "═" * (width - 2) + "╣", BRIGHT_CYAN))
+
+
+def _status_bar(percent: int, width: int = 26) -> str:
+    filled = int(width * percent / 100)
+    return "[" + ("█" * filled) + ("░" * (width - filled)) + f"] {percent:>3d}%"
+
+
+def _render_status_matrix(width: int) -> None:
+    rows = [
+        ("CORE", "INITIALIZING", 18, YELLOW),
+        ("VAULT", "MOUNTING", 42, BRIGHT_CYAN),
+        ("POLICY", "ENFORCEMENT READY", 91, BRIGHT_GREEN),
+        ("TELEMETRY", "LINK STABLE", 100, GREEN),
+    ]
+
+    print(_c("╠" + "═" * (width - 2) + "╣", BRIGHT_CYAN))
+    print(_c("║" + _center("RUNTIME STATUS MATRIX", width - 2) + "║", BOLD, BRIGHT_WHITE))
+    print(_c("╠" + "═" * (width - 2) + "╣", BRIGHT_CYAN))
+
+    header = f"{'MODULE':<14} {'STATE':<24} {'LOAD':<32}"
+    print(_c("║ " + header.ljust(width - 4) + " ║", DIM, BRIGHT_WHITE))
+    print(_c("╟" + "─" * (width - 2) + "╢", BRIGHT_CYAN))
+
+    for module, state, percent, color in rows:
+        bar = _status_bar(percent, width=22)
+        line = f"{module:<14} {state:<24} {bar:<32}"
+        print(_c("║ " + line.ljust(width - 4) + " ║", color))
+
+    print(_c("╠" + "═" * (width - 2) + "╣", BRIGHT_CYAN))
+
+
+def _render_banner(width: int) -> None:
+    notice_lines = [
+        "NOTICE: This device is monitored by school IT policy.",
+        "Keyboard and screen activity may be logged for policy enforcement.",
+        "Authorized use only. Contact IT for questions.",
+    ]
+
+    logo = [
+        r" ███████╗██╗  ██╗██████╗ ████████╗     ██████╗  ██████╗ ████████╗",
+        r" ██╔════╝██║  ██║██╔══██╗╚══██╔══╝    ██╔════╝ ██╔═══██╗╚══██╔══╝",
+        r" █████╗  ███████║██████╔╝   ██║       ██║  ███╗██║   ██║   ██║   ",
+        r" ██╔══╝  ██╔══██║██╔══██╗   ██║       ██║   ██║██║   ██║   ██║   ",
+        r" ███████╗██║  ██║██║  ██║   ██║       ╚██████╔╝╚██████╔╝   ██║   ",
+        r" ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝        ╚═════╝  ╚═════╝    ╚═╝   ",
+    ]
+
+    print(_c("╔" + "═" * (width - 2) + "╗", BRIGHT_CYAN))
+    print(_c("║" + _center("ACCESS CONTROL ACTIVE", width - 2) + "║", BOLD, BRIGHT_RED))
+    print(_c("╠" + "═" * (width - 2) + "╣", BRIGHT_CYAN))
+
+    for line in notice_lines:
+        print(_c("║ " + line.ljust(width - 4) + " ║", YELLOW))
+
+    print(_c("╠" + "═" * (width - 2) + "╣", BRIGHT_CYAN))
+
+    for line in logo:
+        print(_c("║ " + line.ljust(width - 4) + " ║", BRIGHT_WHITE))
+
+    print(_c("╠" + "═" * (width - 2) + "╣", BRIGHT_CYAN))
+    print(_c("║" + _center("EXRT v2  |  EXPERIMENTAL BRANCH v7", width - 2) + "║", BOLD, BRIGHT_GREEN))
+    print(_c("║" + _center("BOOT SEQUENCE // SENTINEL INTERFACE // CONTROLLED ENVIRONMENT", width - 2) + "║", DIM, BRIGHT_CYAN))
+    print(_c("╠" + "═" * (width - 2) + "╣", BRIGHT_CYAN))
+
+    meta = [
+        ("ARCHITECTURE", "School Endpoint Monitor (LTS)"),
+        ("ENGINE", "Lev Engine + Axiom Behavioral Engine"),
+        ("ENFORCEMENT", "Dual-Gated Input Lock"),
+        ("PIPELINE", "Signal Bus / L2 Arbitrator / L3 Verifier"),
+        ("IDENTITY", f"{WORKSTATION_NAME} | {HARDWARE_UUID}"),
+    ]
+
+    for key, value in meta:
+        text = f"{key:<12} : {value}"
+        print(_c("║ " + text.ljust(width - 4) + " ║", WHITE))
+
+    print(_c("╠" + "═" * (width - 2) + "╣", BRIGHT_CYAN))
+
+
+def render_exrt_boot_banner(animate: bool = True) -> None:
+    width = _term_width(88)
+
+    if animate:
+        _type_print(_c(">> booting EXRT v2 / experimental branch v7 ...", BRIGHT_CYAN, BOLD), 0.015)
+        time.sleep(0.2)
+        _type_print(_c(">> establishing control plane ...", BRIGHT_YELLOW), 0.012)
+        time.sleep(0.2)
+        _type_print(_c(">> sealing policy boundary ...", BRIGHT_RED), 0.012)
+        time.sleep(0.25)
+        print()
+
+    _render_banner(width)
+    _render_status_matrix(width)
+
+    footer = "SYSTEM STATE: ONLINE | POLICY ENFORCEMENT: ENABLED | LINK: STABLE"
+    print(_c("║" + _center(footer, width - 2) + "║", BOLD, BRIGHT_YELLOW))
+    print(_c("╚" + "═" * (width - 2) + "╝", BRIGHT_CYAN))
+    print()
+
+    if animate:
+        spinner = ["▖", "▘", "▝", "▗"]
+        sys.stdout.write(_c(" ", RESET))
+        for i in range(12):
+            sys.stdout.write("\r" + _c(f"STATUS: {spinner[i % 4]} SYNCHRONIZING", BRIGHT_MAGENTA, BOLD))
+            sys.stdout.flush()
+            time.sleep(0.08)
+        sys.stdout.write("\r" + " " * 40 + "\r")
+        sys.stdout.flush()
+
+
 def main() -> None:
     global workstation_id_global
 
-    # ── Boot notice (visible to anyone at the machine) ────────────────────────
-    print("=" * 60)
-    print("  NOTICE: This device is monitored by school IT policy.")
-    print("  Keyboard/screen activity is logged on policy violations.")
-    print("  Authorized use only. Contact IT for questions.")
-    print("=" * 60)
-
-    print("\n" + "═" * 60)
-    print(r"  ███╗   ██╗███████╗██╗  ██╗██╗   ██╗███████╗")
-    print(r"  ████╗  ██║██╔════╝╚██╗██╔╝██║   ██║██╔════╝")
-    print(r"  ██╔██╗ ██║█████╗   ╚███╔╝ ██║   ██║███████╗")
-    print(r"  ██║╚██╗██║██╔══╝   ██╔██╗ ██║   ██║╚════██║")
-    print(r"  ██║ ╚████║███████╗██╔╝ ██╗╚██████╔╝███████║")
-    print(r"  ╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝")
-    print("          S E N T I N E L   v 7 . 0 . 0")
-    print("═" * 60)
-    print(" [+] Architecture : School Endpoint Monitor (LTS)")
-    print(" [+] Intelligence : Lev Engine + Axiom Behavioral Engine")
-    print(" [+] Enforcement  : Dual-Gated Input Lock")
-    print(" [+] Behavioral   : Signal Bus / L2 Arbitrator / L3 Verifier")
-    print(f" [+] Identity     : {WORKSTATION_NAME} | {HARDWARE_UUID}")
-    print("═" * 60 + "\n")
+    render_exrt_boot_banner(animate=True)
 
     vault_init()
     ensure_bucket()
