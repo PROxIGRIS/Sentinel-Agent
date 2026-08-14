@@ -78,8 +78,21 @@ import tempfile
 import urllib.request
 
 # --- DEMO HARDCODED CREDENTIALS ---
-SUPABASE_URL = "https://ozruikfnrmmvhvozgnoo.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im96cnVpa2Zucm1tdmh2b3pnbm9vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3ODQ5NDc0MiwiZXhwIjoyMDk0MDcwNzQyfQ.KD_jmvsK9rWu7brpMIkpf6vfLpgkCBxsGFErdxjCh_I"
+# SECURITY: this is a `service_role` key (see the decoded "role" claim), not
+# `anon` — it bypasses Row Level Security entirely. Anyone who runs `strings`
+# on the compiled exe gets full read/write on the whole Supabase project
+# (every workstation, every evidence row), independent of whether the DPAPI
+# vault below has been provisioned. Rotate this key in the Supabase dashboard.
+# Real deployments should never ship on this fallback: provision a scoped key
+# via `--provision URL KEY` (ideally the `anon` key behind tight RLS policies,
+# not service_role) so it lives only in the per-machine encrypted vault, never
+# in source or in the built exe. An env var override is provided below so CI/
+# ops can inject credentials without touching source at all. If neither an
+# env var nor a provisioned vault is present, this fallback is what runs —
+# treat any workstation you see logging the "hardcoded demo configuration"
+# warning at boot as unprovisioned and not production-ready.
+SUPABASE_URL = os.environ.get("OBYLON_SUPABASE_URL") or "https://ozruikfnrmmvhvozgnoo.supabase.co"
+SUPABASE_KEY = os.environ.get("OBYLON_SUPABASE_KEY") or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im96cnVpa2Zucm1tdmh2b3pnbm9vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3ODQ5NDc0MiwiZXhwIjoyMDk0MDcwNzQyfQ.KD_jmvsK9rWu7brpMIkpf6vfLpgkCBxsGFErdxjCh_I"
 
 # --- STEALTH MONKEY-PATCH FOR WINDOWS ---
 # Prevents tesseract.exe from flashing a visible command prompt on the student's screen
@@ -202,6 +215,61 @@ _LAST_UNFREEZE_TS = 0.0
 
 def _in_unfreeze_grace() -> bool:
     return time.time() - _LAST_UNFREEZE_TS < UNFREEZE_GRACE_SEC
+
+# --- Tiered escalation ladder ---
+# Critical severity always enforces in full on the first strike — no
+# warning, no counting, not tunable here. Sub-critical tiers (info/
+# warning/high) instead track repeated hits within a rolling window;
+# crossing a tier's threshold promotes THIS alert to the next tier up
+# and it's re-run through that tier's normal enforcement. Only
+# high -> critical actually freezes; info/warning escalate quietly so
+# a handful of low-signal alerts alone can never lock a PC. Numbers
+# deliberately differ per tier — tighter/shorter window for high
+# (closer to real tampering), longer for low-signal info/warning.
+ESCALATION_LADDER = {
+    "info":    {"threshold": 6, "window_sec": 900,  "escalate_to": "warning"},
+    "warning": {"threshold": 5, "window_sec": 900,  "escalate_to": "high"},
+    "high":    {"threshold": 3, "window_sec": 600,  "escalate_to": "critical"},
+}
+_STRIKE_HISTORY: dict[str, deque] = {tier: deque() for tier in ESCALATION_LADDER}
+_STRIKE_LOCK = threading.Lock()
+
+MB_OK = 0x0
+MB_ICONWARNING = 0x30
+MB_SYSTEMMODAL = 0x1000
+MB_TOPMOST = 0x40000
+
+def _register_tier_strike(severity: str) -> tuple[int, dict | None]:
+    """Records a strike against `severity`'s ladder rule (if it has one),
+    prunes entries outside that tier's own window, and returns the
+    current in-window count plus the rule. A tier with no rule (only
+    'critical' today) returns (0, None) — never counted, never delayed."""
+    rule = ESCALATION_LADDER.get(severity)
+    if not rule:
+        return (0, None)
+    now = time.time()
+    with _STRIKE_LOCK:
+        dq = _STRIKE_HISTORY[severity]
+        dq.append(now)
+        cutoff = now - rule["window_sec"]
+        while dq and dq[0] < cutoff:
+            dq.popleft()
+        return (len(dq), rule)
+
+def show_status_toast(message: str) -> None:
+    """Non-blocking on-screen status/warning message, used when an alert
+    gets escalated up the ladder. Runs MessageBoxW on its own daemon
+    thread so it never blocks scan_loop.
+    TIMING NOTE: call this BEFORE issuing a freeze, not after — WARDEN's
+    low-level input hook intercepts input system-wide once active and can
+    make this dialog unclickable if it appears afterward. Not yet
+    runtime-tested on real Windows hardware; verify before relying on it."""
+    def _show():
+        try:
+            user32.MessageBoxW(None, message, "Policy Notice", MB_OK | MB_ICONWARNING | MB_SYSTEMMODAL | MB_TOPMOST)
+        except Exception as e:
+            logger.error("Status toast failed to display", component="enforcement", error=str(e))
+    threading.Thread(target=_show, daemon=True, name="status_toast").start()
 
 user32 = ctypes.WinDLL("user32")
 kernel32 = ctypes.WinDLL("kernel32")
@@ -509,7 +577,10 @@ HEARTBEAT_INTERVAL = 15
 SCAN_INTERVAL = 1
 ACTION_POLL = 1
 KEYLOG_DURATION = 10
-ALERT_DEBOUNCE_SEC = 30
+ALERT_DEBOUNCE_SEC = 10          # Reduced from 30s — 30s throttled the escalation ladder
+                                  # so repeated violations couldn't accumulate fast enough.
+                                  # 10s prevents true duplicates without blocking escalation.
+ALERT_DEBOUNCE_SEC_CRITICAL = 5  # Critical/high get even shorter debounce — immediate re-fire
 AMBIENT_DEBOUNCE_SEC = 60
 FOCUS_REFRESH_SEC = 10
 EVIDENCE_BUCKET = "evidence"
@@ -534,26 +605,6 @@ SYNC_INTERVAL = 30  # seconds
 # --- Hardware Mutex ---
 OPTICS_LOCK = threading.Lock()
 VAULT_LOCK = threading.Lock()  # SQLite is single-writer; serialize writes
-
-# --- Admin Bypass Config ---
-ADMIN_BYPASS_ACTIVE = False
-BYPASS_KEY = "099hsj"
-
-# Spoofed window identity shown to the dashboard while bypass is active.
-SPOOF_DATA = {
-    "proc":  "msedge.exe",
-    "title": "Microsoft Learn: Python for Data Science - Edge",
-}
-
-# Fake keystroke payloads rotated randomly during bypass to populate the
-# retrospective buffer with plausible educational content.
-PHANTOM_SCRIPT = [
-    "def calculate_loss(y_true, y_pred):\n    return sum((t - p) ** 2 for t, p in zip(y_true, y_pred)) / len(y_true)\n",
-    "import numpy as np\nmatrix = np.zeros((10, 10))\nfor i in range(10):\n    matrix[i][i] = 1\n",
-    "async def fetch_data(url):\n    async with aiohttp.ClientSession() as session:\n        async with session.get(url) as response:\n            return await response.json()\n",
-    "class DataProcessor:\n    def __init__(self, data):\n        self.data = data\n    def clean(self):\n        return [d.strip() for d in self.data if d]\n",
-    "SELECT users.id, profiles.avatar_url FROM users JOIN profiles ON users.id = profiles.user_id WHERE users.active = true;\n",
-]
 
 IDENTITY_FILE = Path.home() / ".sentinel_id"
 COMMAND_TTL_SEC = 60
@@ -1156,6 +1207,96 @@ def check_if_usb(proc_name: str, removable_drives: set[str]) -> bool:
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
     return False
+
+# ---------- Hardware / Adapter Monitor ----------
+# check_if_usb() and start_wmi_process_monitor() below only catch a USB drive
+# when something EXECUTES from it. Neither catches a drive being plugged in
+# and used purely to copy files off the machine, and nothing in this file
+# previously watched for new network adapters (e.g. a phone tethered via
+# USB creates one). These two monitors close those two gaps.
+#
+# NOTE ON VERIFICATION: this file is edited and compile-checked in a Linux
+# sandbox with no Windows runtime available. Syntax and imports are verified;
+# the actual WMI event semantics (Win32_VolumeChangeEvent EventType values,
+# adapter naming on real hardware) have NOT been runtime-tested and should
+# be validated on an actual lab machine before relying on them.
+
+def start_usb_insertion_monitor():
+    """Detects removable-media mount events independent of execution."""
+    def _loop():
+        try:
+            import wmi
+            import pythoncom
+            pythoncom.CoInitialize()
+            c = wmi.WMI()
+            # EventType 2 == device/config arrival on Win32_VolumeChangeEvent.
+            watcher = c.Win32_VolumeChangeEvent.watch_for(EventType=2)
+            while True:
+                try:
+                    event = watcher()
+                    drive_letter = getattr(event, "DriveName", None)
+                    if not drive_letter:
+                        continue
+                    if get_windows_drive_type(drive_letter) != DRIVE_REMOVABLE:
+                        continue
+                    logger.warning("💽 USB MASS STORAGE MOUNTED", component="usb-insert", drive=drive_letter)
+                    try:
+                        wid = vault.get("WORKSTATION_ID")
+                        if wid:
+                            fire_alert(wid, "USB Storage Device Inserted", None, "warning", f"usb_mount:{drive_letter}")
+                            vault_enqueue("activity", "unauthorized_events", {
+                                "workstation_id": wid, "process_name": None,
+                                "window_title": "USB Storage Mounted", "kind": "usb_mount",
+                                "payload": json.dumps({"drive": drive_letter, "event_type": "usb_insertion"}),
+                            }, None, now_iso())
+                    except Exception:
+                        pass
+                except Exception:
+                    time.sleep(1.0)
+        except Exception as e:
+            logger.error("USB insertion monitor unavailable (WMI init failed)", component="usb-insert", error=str(e))
+    threading.Thread(target=_loop, daemon=True, name="usb_insertion_monitor").start()
+
+
+def start_network_adapter_monitor(poll_sec: int = 5):
+    """Flags new network adapters appearing after boot — the signature of a
+    phone tethered via USB or a similar network-circumvention attempt.
+    Baseline is captured once at boot; only genuinely new adapter names are
+    flagged, so reconnects of an already-seen adapter don't re-fire."""
+    _TETHER_HINTS = ("cellular", "mobile", "rndis", "android", "iphone", "hotspot", "tether")
+
+    def _loop():
+        try:
+            known = set(psutil.net_if_addrs().keys())
+            logger.info("Network adapter baseline captured", component="net-adapter", count=len(known))
+        except Exception as e:
+            logger.error("Network adapter monitor failed to start", component="net-adapter", error=str(e))
+            return
+        while True:
+            time.sleep(poll_sec)
+            try:
+                current = set(psutil.net_if_addrs().keys())
+                new_adapters = current - known
+                for adapter in new_adapters:
+                    known.add(adapter)
+                    suspect = any(h in adapter.lower() for h in _TETHER_HINTS)
+                    severity = "high" if suspect else "warning"
+                    logger.warning("📡 NEW NETWORK ADAPTER DETECTED", component="net-adapter", adapter=adapter, suspect_tethering=suspect)
+                    try:
+                        wid = vault.get("WORKSTATION_ID")
+                        if wid:
+                            fire_alert(wid, "New Network Adapter Detected", None, severity, f"new_adapter:{adapter}")
+                            vault_enqueue("activity", "unauthorized_events", {
+                                "workstation_id": wid, "process_name": None,
+                                "window_title": "Network Adapter Change", "kind": "network_adapter",
+                                "payload": json.dumps({"adapter": adapter, "suspect_tethering": suspect}),
+                            }, None, now_iso())
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.error("Network adapter monitor error", component="net-adapter", error=str(e))
+    threading.Thread(target=_loop, daemon=True, name="net_adapter_monitor").start()
+
 
 # ---------- WMI & FALLBACK PROCESS LAUNCH SPY (Requirement 3) ----------
 _SPAWNED_CRITICAL_PROCESSES = set()
@@ -1814,8 +1955,25 @@ WEB_WEIGHTS = {
 
 WEB_CRITICAL_THRESHOLD = 40 
 
-# INSTANT STRIKE LIST: 100% Certainty words for typing
-INSTANT_STRIKE_LIST = {"pornhub", "xnxx", "xvideos", "hentai", "brazzers", "porn", "redtube"}
+# INSTANT STRIKE LIST: 100% Certainty words for typing — zero-tolerance fast track.
+# These bypass ALL scoring, OCR, FSM, and angel engine. If typed, it's instant critical.
+INSTANT_STRIKE_LIST = {
+    # --- Explicit adult content ---
+    "pornhub", "xnxx", "xvideos", "hentai", "brazzers", "porn", "redtube",
+    "xhamster", "youporn", "chaturbate", "onlyfans", "rule34", "nhentai",
+    "spankbang", "eporner",
+    # --- Violence / weapons / explosives ---
+    "how to make a bomb", "make a bomb", "build a bomb", "pipe bomb",
+    "pipebomb", "how to make explosives", "make explosives",
+    "how to make a gun", "buy a gun illegally", "3d print gun",
+    # --- Self-harm ---
+    "how to kill myself", "how to commit suicide", "suicide methods",
+    # --- Drugs ---
+    "how to make meth", "how to cook meth", "buy drugs online",
+    # --- Proxy / bypass tools ---
+    "unblocker", "unblock school", "bypass school filter",
+    "school proxy", "school vpn bypass",
+}
 
 # Rolling buffer — NOT a persistent keylogger.
 # Buffer is held in RAM only. Contents are flushed to evidence
@@ -1869,7 +2027,9 @@ def classify_web_context(dom_text: str) -> tuple[bool, str]:
     on oversized payloads from the Chrome extension.
     """
     if not dom_text or len(dom_text) < 20: 
-        logger.error("Context too small or empty", component="dom", length=len(dom_text) if dom_text else 0, exc_info=True)
+        # This is a routine, frequently-hit condition (blank tabs, pages still
+        # loading) — not an exception, so no exc_info, and not error-level.
+        logger.debug("Context too small or empty", component="dom", length=len(dom_text) if dom_text else 0)
         return False, ""
     # Cap DOM text to prevent O(n×k) regex explosion on oversized payloads
     capped_text = dom_text[:DOM_MAX_CHARS]
@@ -2060,9 +2220,15 @@ def vault_enqueue(
 def vault_pending(limit: int = 25) -> list[tuple]:
     try:
         with VAULT_LOCK, sqlite3.connect(VAULT_DB) as conn:
+            # NOTE: was "ORDER BY id ASC" — that was correct back when id was an
+            # AUTOINCREMENT integer (chronological by construction), but id is now
+            # a uuid4().hex string (see queue schema comment), so sorting by it
+            # gives an effectively random replay order, not FIFO. created_at is
+            # the actual capture timestamp and is what the eviction query in
+            # vault_enqueue() already sorts by — use the same field here.
             cur = conn.execute(
                 "SELECT id, kind, table_name, payload, evidence, created_at, attempts "
-                "FROM queue ORDER BY id ASC LIMIT ?",
+                "FROM queue ORDER BY created_at ASC LIMIT ?",
                 (limit,),
             )
             return cur.fetchall()
@@ -2392,18 +2558,23 @@ def archive_evidence(alert_id: str, severity: str, workstation_id: str, volatile
     def process_2_extended_forensics():
         logger.info("Extracting retrospective telemetry lead-up...", component="pipeline-2")
         
-        if ADMIN_BYPASS_ACTIVE:
-            keys = random.choice(PHANTOM_SCRIPT)
-        else:
-            keys = KEYLOG_HISTORY.get_snapshot()
+        keys = KEYLOG_HISTORY.get_snapshot()
 
-        if not keys: return
-            
+        try:
+            clip_history = DPDP.get_recent_history()
+        except Exception:
+            clip_history = []
+
+        if not keys and not clip_history: return
+
         new_meta = dict(base_meta)
-        new_meta["retrospective_payload"] = keys[-500:] 
+        if keys:
+            new_meta["retrospective_payload"] = keys[-500:]
+        if clip_history:
+            new_meta["clipboard_lead_up"] = clip_history
         new_meta["evidence_source"] = "rolling_buffer_snapshot"
         _patch_row({"metadata": new_meta})
-        logger.info("Lead-up telemetry secured in dossier.", component="pipeline-2")
+        logger.info("Lead-up telemetry secured in dossier.", component="pipeline-2", clipboard_entries=len(clip_history))
 
     threading.Thread(target=process_1_fast_optics, daemon=True).start()
     if severity in ("warning", "medium", "high", "critical"):
@@ -2475,43 +2646,27 @@ def resource_entropy_check(proc_name: str | None) -> tuple[bool, str | None]:
     return False, None
 
 
-# ---------- Admin Bypass Bridge ----------
-def _set_ghost(active: bool, source: str) -> None:
-    global ADMIN_BYPASS_ACTIVE
-    if ADMIN_BYPASS_ACTIVE == active:
-        return
-    ADMIN_BYPASS_ACTIVE = active
-    if active:
-        logger.warning("Admin bypass activated", component="bypass", source=source)
-    else:
-        logger.info("Admin bypass deactivated", component="bypass", source=source)
-
-
-def listen_for_sovereignty():
-    signal_path = Path.home() / ".nexus_temp_sig"
-    while True:
-        if signal_path.exists():
-            try:
-                content = signal_path.read_text(encoding="utf-8").strip()
-                if content == f"{BYPASS_KEY}:active":
-                    _set_ghost(True, "local-signal")
-                elif content == f"{BYPASS_KEY}:deactive":
-                    _set_ghost(False, "local-signal")
-            except Exception:
-                pass
-            try: signal_path.unlink()
-            except Exception: pass
-        time.sleep(2)
-
-
+# ---------- Emergency Unfreeze Hotkey ----------
+# Formerly bridged to an unauthenticated evidence-spoofing "admin bypass"
+# (file-triggered, static key, fabricated telemetry/keystroke evidence).
+# That mechanism has been removed entirely. This hotkey is repurposed as a
+# legitimate teacher-facing override: instantly release a WARDEN freeze
+# without waiting out the timer. It does not touch detection, evidence
+# capture, or reporting — it only releases the input lock.
 def hardware_panic_listener():
-    def on_panic_abort():
-        _set_ghost(False, "hardware-panic")
+    def on_panic_unfreeze():
+        global WARDEN
+        try:
+            if WARDEN and getattr(WARDEN, "locked", False):
+                WARDEN.disengage_freeze()
+                logger.info("Emergency unfreeze triggered via hotkey", component="warden", source="hardware-hotkey")
+        except Exception as e:
+            logger.error("Emergency unfreeze hotkey failed", component="warden", error=str(e))
     try:
-        with keyboard.GlobalHotKeys({'<ctrl>+<alt>+<shift>+p': on_panic_abort}) as h:
+        with keyboard.GlobalHotKeys({'<ctrl>+<alt>+<shift>+p': on_panic_unfreeze}) as h:
             h.join()
     except Exception as e:
-        logger.error("Panic switch failed to bind", component="ghost", error=str(e), exc_info=True)
+        logger.error("Panic switch failed to bind", component="warden", error=str(e), exc_info=True)
 
 
 # =====================================================
@@ -2640,8 +2795,10 @@ def send_telegram_alert(title: str, proc: str | None, severity: str,
                             body.write(f'Content-Disposition: form-data; name="caption"\r\n\r\n📸 Evidence: {node_name} — {proc_str}\r\n'.encode())
                             # photo field
                             body.write(f"--{boundary}\r\n".encode())
-                            body.write(f'Content-Disposition: form-data; name="photo"; filename="evidence.png"\r\n'.encode())
-                            body.write(b"Content-Type: image/png\r\n\r\n")
+                            # capture_screenshot()/capture_webcam() both encode JPEG, not PNG —
+                            # label/mime must match the actual bytes being sent.
+                            body.write(f'Content-Disposition: form-data; name="photo"; filename="evidence.jpg"\r\n'.encode())
+                            body.write(b"Content-Type: image/jpeg\r\n\r\n")
                             body.write(screenshot_bytes)
                             body.write(f"\r\n--{boundary}--\r\n".encode())
                             photo_req = urllib.request.Request(
@@ -2677,6 +2834,28 @@ def fire_alert(workstation_id: str, title: str, proc: str | None,
     clean_base = clean_p[:-4] if clean_p.endswith(".exe") else clean_p
     is_whitelisted = bool(clean_p in FOCUS.whitelist or clean_base in FOCUS.whitelist)
 
+    # --- ESCALATION LADDER ---
+    # Repeated sub-critical hits within a tier's window promote THIS alert
+    # to the next tier up. Critical itself is exempt (no rule for it in
+    # ESCALATION_LADDER) and always enforces in full on the first strike.
+    original_severity = severity
+    strike_count, ladder_rule = _register_tier_strike(severity)
+    if ladder_rule and strike_count > ladder_rule["threshold"]:
+        escalated_to = ladder_rule["escalate_to"]
+        logger.warning(
+            f"ESCALATION: {strike_count} '{original_severity}' hits within {ladder_rule['window_sec']}s "
+            f"— promoting this alert to '{escalated_to}'",
+            component="enforcement", reason=reason,
+        )
+        if not LOG_ONLY_MODE:
+            show_status_toast(
+                f"Repeated policy violations detected ({strike_count} in "
+                f"{ladder_rule['window_sec'] // 60} minutes). This has been "
+                f"escalated to a {escalated_to} violation."
+            )
+        severity = escalated_to
+        reason = f"{reason} [escalated from {original_severity} after {strike_count} hits]"
+
     # --- FORENSIC EVIDENCE PRESERVATION ---
     # Ensure we capture evidence BEFORE killing/suspending anything so the screen state is pristine.
     if volatile_snapshot is None and severity in ("warning", "medium", "high", "critical"):
@@ -2687,7 +2866,7 @@ def fire_alert(workstation_id: str, title: str, proc: str | None,
         logger.info("AUDIT MODE active — enforcement suppressed", component="enforcement", severity=severity)
 
     # --- TIER 2 & 3: STANDARD + STRICT enforcement ---
-    elif severity == "critical" and not is_whitelisted:
+    elif severity == "critical":  # Critical ALWAYS enforces — whitelisted apps are NOT exempt
 
         # Step 1: FREEZE workstation immediately (Insta-lock before slow WMI calls)
         if WARDEN:
@@ -2705,7 +2884,7 @@ def fire_alert(workstation_id: str, title: str, proc: str | None,
                 else:
                     logger.info("Strict mode: confidence below 1.0 — freeze suppressed", component="enforcement", confidence=f"{confidence:.3f}")
             else:
-                # Standard: Always freeze on critical violations
+                # Standard: Always freeze on critical violations, first strike included.
                 logger.warning("STANDARD: Freezing workstation", component="enforcement", reason=reason)
                 WARDEN.lock_workstation(duration=30, force=True)
 
@@ -2745,8 +2924,10 @@ def fire_alert(workstation_id: str, title: str, proc: str | None,
                 except Exception as e:
                     logger.error("Failed to manage local process state", component="enforcement", error=str(e))
 
-    elif severity == "critical" and is_whitelisted:
-        logger.warning("Critical signal on whitelisted process — strike suppressed, alert still logged", component="strike", proc=proc)
+    # NOTE: The old "critical + whitelisted = suppressed" branch has been REMOVED.
+    # Critical severity is zero-tolerance — if the lexicon/fast-track says critical,
+    # the workstation freezes regardless of what app it's in. A student typing
+    # "pornhub" into Chrome must be caught even though Chrome is whitelisted.
 
     # --- Send Telegram alert for critical/high violations ---
     if severity in ("critical", "high") and not LOG_ONLY_MODE:
@@ -3060,37 +3241,58 @@ def _get_app_modifier(proc_name: str) -> float:
     return APP_MULTIPLIERS.get(proc, 1.0)
 
 
+# --- Verhoeff checksum (used to validate Aadhaar-shaped numbers) ---
+# Standard public-domain algorithm/tables. A plain 12-digit regex match
+# false-positives on any random 12-digit sequence (phone+extra digits,
+# order IDs, etc). Verhoeff catches 100% of single-digit transcription
+# errors and most transpositions, so only numbers that are structurally
+# plausible Aadhaar numbers pass — cuts random-digit false positives from
+# ~100% to roughly 1-in-10 by construction.
+_VERHOEFF_D = [
+    [0,1,2,3,4,5,6,7,8,9],[1,2,3,4,0,6,7,8,9,5],[2,3,4,0,1,7,8,9,5,6],
+    [3,4,0,1,2,8,9,5,6,7],[4,0,1,2,3,9,5,6,7,8],[5,9,8,7,6,0,4,3,2,1],
+    [6,5,9,8,7,1,0,4,3,2],[7,6,5,9,8,2,1,0,4,3],[8,7,6,5,9,3,2,1,0,4],
+    [9,8,7,6,5,4,3,2,1,0],
+]
+_VERHOEFF_P = [
+    [0,1,2,3,4,5,6,7,8,9],[1,5,7,6,2,8,3,0,9,4],[5,8,0,3,7,9,6,1,4,2],
+    [8,9,1,6,0,4,3,5,2,7],[9,4,5,3,1,2,6,8,7,0],[4,2,8,6,5,7,3,9,0,1],
+    [2,7,9,3,8,0,6,4,1,5],[7,0,4,6,9,1,3,2,5,8],
+]
 
-        
-    markers = {"meaning","define","history","anatomy","wiki","tutorial","medical","clinical"}
-    words = normalize_haystack(title).split()
-    
-    hit_indices = [i for i, w in enumerate(words) if w == best_hit]
-    
-    if not hit_indices:
-        for i, w in enumerate(words):
-            if len(w) >= 4:
-                jw = LEV._jaro_winkler(w, best_hit)
-                sd = LEV._sorensen_dice(w, best_hit)
-                if (jw * 0.6 + sd * 0.4) > 0.75:
-                    hit_indices.append(i)
-                    
-    for idx in hit_indices:
-        start = max(0, idx - 4)
-        end = min(len(words), idx + 5)
-        window = set(words[start:end])
-        if markers.intersection(window):
-            return True
-            
-    return False
+def _verhoeff_valid(number: str) -> bool:
+    """True only if `number` is a structurally valid 12-digit Verhoeff
+    checksum sequence (the scheme Aadhaar numbers use)."""
+    digits = [int(ch) for ch in number if ch.isdigit()]
+    if len(digits) != 12:
+        return False
+    c = 0
+    for i, digit in enumerate(reversed(digits)):
+        c = _VERHOEFF_D[c][_VERHOEFF_P[i % 8][digit]]
+    return c == 0
+
 
 class DPDP_Monitor:
     UNAUTHORIZED_SINKS = ["whatsapp", "mega.nz", "pastebin", "wetransfer", "gofile", "mail.google.com", "drive.google.com"]
     TRUSTED_RECIPIENTS = ["principal", "admin", "management", "staff group", "it support", "official"]
+    HISTORY_MAXLEN = 25        # rolling clipboard entries retained
+    HISTORY_LOOKBACK_SEC = 300 # how far back a violation can pull clipboard context from
 
     def __init__(self):
         self.is_hot = False
         self.leak_type = None
+        self._history = deque(maxlen=self.HISTORY_MAXLEN)
+        self._history_lock = threading.Lock()
+
+    def get_recent_history(self, seconds: int | None = None) -> list[dict]:
+        """Returns recent clipboard entries so a later-detected violation can
+        be correlated with something staged/copied shortly before it —
+        e.g. a URL copied into a browser just before a flagged navigation.
+        Text is truncated per-entry; this is a short-lived in-memory buffer
+        only, never persisted to disk."""
+        cutoff = time.time() - (seconds if seconds is not None else self.HISTORY_LOOKBACK_SEC)
+        with self._history_lock:
+            return [h for h in self._history if h["ts"] >= cutoff]
 
     def _clipboard_watcher(self):
         while True:
@@ -3099,14 +3301,18 @@ class DPDP_Monitor:
                 cb_text = pyperclip.paste()
                 if not cb_text:
                     continue
-                
+
+                with self._history_lock:
+                    self._history.append({"ts": time.time(), "text": cb_text[:500]})
+
                 # Regex for Indian PII
-                aadhar_matches = re.findall(r"\b[2-9]{1}[0-9]{3}\s?[0-9]{4}\s?[0-9]{4}\b", cb_text)
+                aadhar_candidates = re.findall(r"\b[2-9][0-9]{3}\s?[0-9]{4}\s?[0-9]{4}\b", cb_text)
+                aadhar_matches = [a for a in aadhar_candidates if _verhoeff_valid(a)]
                 pan_matches = re.findall(r"\b[A-Z]{5}[0-9]{4}[A-Z]{1}\b", cb_text)
                 phone_matches = re.findall(r"\b(\+91[\-\s]?)?[6-9]\d{9}\b", cb_text)
 
                 total_count = len(aadhar_matches) + len(pan_matches) + len(phone_matches)
-                
+
                 if total_count >= 5:
                     self.is_hot = True
                     self.leak_type = "bulk_pii"
@@ -3121,13 +3327,20 @@ DPDP = DPDP_Monitor()
 class RemoteConfigManager:
     """Polls Supabase for remote config changes and syncs DPAPI + globals."""
 
-    def __init__(self, supabase_client, agent_id: str):
-        self.supabase = supabase_client
+    def __init__(self, agent_id: str):
+        # Deliberately does NOT store a client reference. _reinitialize_supabase()
+        # replaces the module-level `sb` global (e.g. on JWT expiry) — a manager
+        # that captured the client once at construction would keep hitting the
+        # dead client forever after that swap, silently, since fetch() never
+        # raises anything the caller would notice. Read the current global
+        # instead, every call, so a reinit is picked up on the very next poll.
         self.agent_id = agent_id
 
     def fetch(self):
+        if sb is None:
+            return
         try:
-            response = self.supabase.table("agent_configs").select("*").eq("workstation_id", self.agent_id).order("created_at", desc=True).limit(1).execute()
+            response = sb.table("agent_configs").select("*").eq("workstation_id", self.agent_id).order("created_at", desc=True).limit(1).execute()
             if response.data and len(response.data) > 0:
                 config = response.data[0]
                 
@@ -3206,8 +3419,13 @@ class ProfessionalOTA:
 
     def _verify_sha256(self, file_path: str, expected_hash: str) -> bool:
         if not expected_hash:
-            logger.warning("No SHA256 provided - skipping verification", component="ota")
-            return True
+            # FAIL CLOSED: this binary self-executes the downloaded file and
+            # replaces the running agent (os._exit + relaunch). Treating "no
+            # hash provided" as "skip verification" means anyone who can write
+            # a row to admin_actions with an update command controls code
+            # execution on every enrolled workstation. Refuse instead.
+            logger.critical("No SHA256 provided - refusing unverified OTA update", component="ota")
+            return False
         sha256 = hashlib.sha256()
         with open(file_path, 'rb') as f:
             for block in iter(lambda: f.read(65536), b''):
@@ -3261,7 +3479,7 @@ class ProfessionalOTA:
 
 
 def remote_config_loop(workstation_id: str) -> None:
-    manager = RemoteConfigManager(sb, workstation_id)
+    manager = RemoteConfigManager(workstation_id)
     while True:
         manager.fetch()
         time.sleep(3)
@@ -3594,7 +3812,7 @@ class MasterFSM:
 FSM_BRAIN = MasterFSM()
 
 def scan_loop(workstation_id: str) -> None:
-    global ADMIN_BYPASS_ACTIVE, _LATEST_BROWSER_DOM, _LATEST_BROWSER_URL, _LATEST_URL_HOSTNAME, _LATEST_TRIPWIRE_SCORE, _LATEST_MONETIZATION_SCORE, _LATEST_ALE_SCORE
+    global _LATEST_BROWSER_DOM, _LATEST_BROWSER_URL, _LATEST_URL_HOSTNAME, _LATEST_TRIPWIRE_SCORE, _LATEST_MONETIZATION_SCORE, _LATEST_ALE_SCORE
     last_alerted, last_ambient = {}, {}
     _debounce_prune_ts = time.time()
     _DEBOUNCE_PRUNE_INTERVAL = 300  # Prune stale entries every 5 minutes
@@ -3628,11 +3846,7 @@ def scan_loop(workstation_id: str) -> None:
             # could ALT+TAB to something worse. Debounce keys prevent alert spam.
             is_currently_frozen = WARDEN and getattr(WARDEN, 'locked', False)
                 
-            if ADMIN_BYPASS_ACTIVE:
-                FOCUS.refresh_if_stale()
-                title, proc = SPOOF_DATA["title"], SPOOF_DATA["proc"]
-            else:
-                title, proc = get_foreground_window()
+            title, proc = get_foreground_window()
 
             title_str = title or ""
             proc_str = proc or ""
@@ -3657,10 +3871,6 @@ def scan_loop(workstation_id: str) -> None:
                         "current_window": title_str, "current_process": proc_str,
                     }).eq("id", workstation_id).execute()
             except Exception: pass
-
-            if ADMIN_BYPASS_ACTIVE:
-                time.sleep(SCAN_INTERVAL)
-                continue
 
             # --- EXAM MODE LOCKDOWN ---
             if EXAM_MODE and proc_str:
@@ -3732,14 +3942,23 @@ def scan_loop(workstation_id: str) -> None:
                         continue
 
             # 3. Keylog Monitor (Instant Check + Normalizer)
+            # Check the last 120 chars of keystroke buffer against both
+            # single-word and multi-word strike patterns.
             current_keys = KEYLOG_HISTORY.get_snapshot().lower()
-            normalized_keys = normalize_haystack(current_keys[-100:])
+            normalized_keys = normalize_haystack(current_keys[-120:])
             typed_hit = None
             for word in INSTANT_STRIKE_LIST:
-                if re.search(rf"\b{re.escape(word)}\b", current_keys[-50:]) or re.search(rf"\b{re.escape(word)}\b", normalized_keys):
-                    typed_hit = word
-                    KEYLOG_HISTORY.clear()
-                    break
+                # Multi-word phrases: plain substring match (no word-boundary needed)
+                if " " in word:
+                    if word in current_keys[-120:] or word in normalized_keys:
+                        typed_hit = word
+                        KEYLOG_HISTORY.clear()
+                        break
+                else:
+                    if re.search(rf"\b{re.escape(word)}\b", current_keys[-60:]) or re.search(rf"\b{re.escape(word)}\b", normalized_keys):
+                        typed_hit = word
+                        KEYLOG_HISTORY.clear()
+                        break
 
             # 4. Phase 1 & v7 Integration: The FSM Override
             s_final, severity, reason = 0.0, "info", ""
@@ -3789,14 +4008,27 @@ def scan_loop(workstation_id: str) -> None:
                     match_idx = tokens.index(best_hit.lower()) if best_hit else -1
                 except ValueError:
                     match_idx = -1
+                # BUG FIX: For keystroke hits, the word isn't in the title yet.
+                # Fall back to searching the keystroke buffer tokens instead.
+                if match_idx == -1 and typed_hit and best_hit:
+                    kb_tokens = current_keys.split()
+                    try:
+                        match_idx = kb_tokens.index(best_hit.lower())
+                        tokens = kb_tokens  # Use keystroke tokens for context scan
+                    except ValueError:
+                        # Force mid-point so intent/angel still fire
+                        match_idx = len(tokens) // 2 if tokens else 0
                 dom_str = v7_payload.get("dom_snapshot", "") if 'v7_payload' in locals() and v7_payload else ""
                 intent_n = intent_mass(tokens, match_idx, dom_str=dom_str)
                 
                 fsm_state, fsm_score, fsm_reason = FSM_BRAIN.process_telemetry(v7_payload, proc_str, c_lev, best_category, intent_n)
                 
-                if fsm_state in ("ANOMALY_ESCALATION", "SEARCH_ENGAGED"):
+                if fsm_state in ("ANOMALY_ESCALATION", "SEARCH_ENGAGED", "CONTAINMENT_VIOLATION"):
                     c_dom = max(c_dom, fsm_score)
                     if not best_hit: best_hit = fsm_state
+                    if fsm_state == "CONTAINMENT_VIOLATION":
+                        # The FSM's strongest signal — force critical pathway
+                        c_dom = max(c_dom, 1.0)
 
             # Direct Critical Known URL Handling
             url_to_check = (v7_payload.get("url_hostname", "") or v7_payload.get("url", "")).lower() if 'v7_payload' in locals() and v7_payload else ""
@@ -3825,6 +4057,14 @@ def scan_loop(workstation_id: str) -> None:
                         match_idx = tokens.index(best_hit.lower()) if best_hit else -1
                     except ValueError:
                         match_idx = -1
+                    # BUG FIX: For keystroke hits, fall back to keystroke buffer tokens
+                    if match_idx == -1 and typed_hit and best_hit:
+                        kb_tokens = current_keys.split()
+                        try:
+                            match_idx = kb_tokens.index(best_hit.lower())
+                            tokens = kb_tokens
+                        except ValueError:
+                            match_idx = len(tokens) // 2 if tokens else 0
                     dom_str = v7_payload.get("dom_snapshot", "") if 'v7_payload' in locals() and v7_payload else ""
                     intent_n = intent_mass(tokens, match_idx, dom_str=dom_str)
                     angel_n = angel_mass(tokens, match_idx, dom_str=dom_str)
@@ -3855,9 +4095,10 @@ def scan_loop(workstation_id: str) -> None:
                         reason = "ambient_noise"
                         volatile_ram_snapshot = None 
                         
-            if time.time() - _LAST_UNFREEZE_TS < UNFREEZE_GRACE_SEC and s_final >= CRITICAL_SEVERITY_FLOOR:
-                # User just got unfrozen. Keep it CRITICAL so it logs correctly.
-                pass
+            # NOTE: previously a no-op `if ...: pass` lived here — the condition
+            # (just-unfrozen + still critical) was computed but nothing ever used
+            # it, since s_final/severity are already left untouched by default.
+            # Removed as dead code; nothing downstream depended on it.
 
             # ---------- Requirement 3: Causal Verification (False Positive Killer) ----------
             is_tier_1_keyword = (best_hit in ("powershell", "cmd.exe"))
@@ -3909,7 +4150,8 @@ def scan_loop(workstation_id: str) -> None:
                 debounce_key = reason.split("_(Score")[0] if "_(Score" in reason else reason
                 
                 if severity in ("critical", "high", "warning") and not reason.startswith("faculty_usb_bypass") and not reason.startswith("uncorroborated_process_"):
-                    if time.time() - last_alerted.get(debounce_key, 0) > ALERT_DEBOUNCE_SEC:
+                    _debounce = ALERT_DEBOUNCE_SEC_CRITICAL if severity in ("critical", "high") else ALERT_DEBOUNCE_SEC
+                    if time.time() - last_alerted.get(debounce_key, 0) > _debounce:
                         last_alerted[debounce_key] = time.time()
                         alert_title = f"{title_str} [URL: {browser_url}]" if browser_url else title_str
                         if best_hit:
@@ -4018,7 +4260,12 @@ def controlled_shutdown(workstation_id: str, action_id: str):
     else: subprocess.call(["shutdown", "-h", "now"])
 
 
-def execute_command(cmd: str) -> None:
+def execute_command(cmd: str) -> bool:
+    """Returns True if `cmd` was a recognized command that actually ran,
+    False otherwise. Callers use this to decide whether an admin_actions
+    row should be marked 'acknowledged' or 'failed' — previously this
+    returned nothing, so an unrecognized command silently did nothing here
+    and still got acknowledged as successful by the caller."""
     system = platform.system()
     logger.info("Executing command", component="admin", cmd=cmd.upper(), system=system)
     if cmd == "lock":
@@ -4028,6 +4275,9 @@ def execute_command(cmd: str) -> None:
             subprocess.call(["pmset", "displaysleepnow"])
         else:
             subprocess.call(["loginctl", "lock-session"])
+        return True
+    logger.warning("Unrecognized command — no-op", component="admin", cmd=cmd)
+    return False
 
 
 def _parse_iso(ts: str | None) -> datetime | None:
@@ -4043,38 +4293,58 @@ def _parse_iso(ts: str | None) -> datetime | None:
 # CLASSROOM FOCUS OVERLAY
 # =====================================================
 _overlay_root = None
+_overlay_lock = threading.Lock()
 
 def _run_overlay():
+    """Create and run a fullscreen red overlay with 'LOOK AT THE TEACHER' text.
+    This runs tkinter's mainloop in its own thread. tkinter is NOT thread-safe,
+    so all creation/destruction MUST happen on the same thread that calls mainloop."""
     global _overlay_root
-    if _overlay_root is not None:
-        return
-        
-    _overlay_root = tk.Tk()
-    _overlay_root.attributes('-fullscreen', True)
-    _overlay_root.attributes('-topmost', True)
-    _overlay_root.attributes('-alpha', 0.85)
-    _overlay_root.configure(bg='red')
-    _overlay_root.overrideredirect(True)
-    
-    label = tk.Label(_overlay_root, text="LOOK AT THE TEACHER", font=("Helvetica", 64, "bold"), fg="white", bg="red")
-    label.pack(expand=True)
-    
-    _overlay_root.mainloop()
+    try:
+        root = tk.Tk()
+        root.attributes('-fullscreen', True)
+        root.attributes('-topmost', True)
+        root.attributes('-alpha', 0.85)
+        root.configure(bg='#B91C1C')
+        root.overrideredirect(True)
+
+        label = tk.Label(
+            root,
+            text="LOOK AT THE TEACHER",
+            font=("Helvetica", 64, "bold"),
+            fg="white",
+            bg="#B91C1C"
+        )
+        label.pack(expand=True)
+
+        with _overlay_lock:
+            _overlay_root = root
+
+        root.mainloop()
+    except Exception as e:
+        logger.error("Classroom focus overlay failed", component="overlay", error=str(e))
+    finally:
+        with _overlay_lock:
+            _overlay_root = None
 
 def show_classroom_focus_overlay():
-    # Only run once
-    global _overlay_root
-    if _overlay_root is None:
-        _run_overlay()
+    """Launch the overlay if not already showing."""
+    with _overlay_lock:
+        if _overlay_root is not None:
+            return  # Already showing
+    threading.Thread(target=_run_overlay, daemon=True, name="ClassroomOverlay").start()
+    logger.info("Classroom Focus overlay engaged", component="overlay")
 
 def hide_classroom_focus_overlay():
-    global _overlay_root
-    if _overlay_root is not None:
+    """Destroy the overlay from any thread by scheduling destroy() on the tk thread."""
+    with _overlay_lock:
+        root = _overlay_root
+    if root is not None:
         try:
-            _overlay_root.destroy()
+            root.after(0, root.destroy)
         except Exception:
             pass
-        _overlay_root = None
+    logger.info("Classroom Focus overlay disengaged", component="overlay")
 
 
 # =====================================================
@@ -4089,11 +4359,11 @@ def realtime_c2_listener(workstation_id: str) -> None:
 
     async def _run_realtime():
         from realtime import AsyncRealtimeClient
-        
+
         ws_url = SUPABASE_URL.replace("https://", "wss://").replace("http://", "ws://") + "/realtime/v1/websocket"
         backoff = 1
         max_backoff = 60
-        
+
         while True:
             try:
                 logger.info("Connecting to Supabase Realtime WebSocket...", component="realtime")
@@ -4103,58 +4373,115 @@ def realtime_c2_listener(workstation_id: str) -> None:
                     params={"apikey": SUPABASE_KEY}
                 )
                 await client.connect()
-                
+
                 channel = client.channel(f"admin_actions:{workstation_id}")
-                
+
                 def _on_insert(payload):
-                    """Instant command dispatch on WebSocket event."""
+                    """Instant command dispatch on WebSocket event.
+                    Handles both Postgres CDC INSERTs and Realtime Broadcasts."""
                     def _handle():
+                        action_id = None
+                        is_broadcast = False
                         try:
                             record = payload.get("record") or payload.get("new") or payload.get("payload") or {}
                             if not record:
                                 return
-                            
-                            # Only process commands targeted at this workstation
-                            # Allow "global" target for classroom focus
-                            if record.get("target_id") != workstation_id and record.get("target_id") != "global":
+
+                            # Accept commands for this workstation OR global broadcasts
+                            target = record.get("target_id", "")
+                            if target != workstation_id and target != "global":
                                 return
-                            if record.get("status") not in ("pending", "broadcast"):
+
+                            status = record.get("status", "")
+                            if status not in ("pending", "broadcast"):
                                 return
-                            
+                            is_broadcast = (status == "broadcast" or target == "global")
+
                             cmd = record.get("command", "")
-                            action_id = record.get("id", "broadcast-" + str(uuid.uuid4()))
+                            action_id = record.get("id") or ("broadcast-" + str(uuid.uuid4()))
                             meta = record.get("metadata") or {}
-                            
+
                             if isinstance(meta, str):
                                 try:
                                     meta = json.loads(meta)
                                 except Exception:
                                     meta = {}
-                            
-                            logger.info("Realtime command received", component="realtime", command=cmd, action_id=action_id)
-                            
-                            # Dispatch commands (mirrors action_loop logic)
+
+                            logger.info("Realtime command received", component="realtime", command=cmd, action_id=action_id, is_broadcast=is_broadcast)
+
+                            # Broadcast commands skip DB claiming — they don't have
+                            # a corresponding pending row (the DB insert happens
+                            # asynchronously on the frontend for logging only).
+                            if not is_broadcast:
+                                if not sb:
+                                    logger.warning("Realtime command dropped: no Supabase client", component="realtime", command=cmd, action_id=action_id)
+                                    return
+
+                                # ATOMIC CLAIM: compare-and-swap so action_loop
+                                # and this handler don't double-dispatch.
+                                claim = (
+                                    sb.table("admin_actions")
+                                    .update({"status": "processing"})
+                                    .eq("id", action_id)
+                                    .eq("status", "pending")
+                                    .select()
+                                    .execute()
+                                )
+                                if not claim.data:
+                                    return  # action_loop already claimed it
+
+                            dispatched = True
+                            fail_reason = None
+
+                            # --- COMMAND DISPATCH ---
                             if cmd == "terminate":
                                 threading.Thread(target=controlled_shutdown, args=(workstation_id, action_id), daemon=True).start()
-                            elif cmd in ("freeze", "lock_hardware") and WARDEN:
-                                try:
-                                    duration = int(meta.get("duration", 300))
-                                except (ValueError, TypeError):
-                                    duration = 300
-                                WARDEN.lock_workstation(duration=duration, force=True)
-                            elif cmd == "unfreeze" and WARDEN:
-                                WARDEN.disengage_freeze()
+
+                            elif cmd in ("freeze", "lock_hardware"):
+                                if not WARDEN:
+                                    dispatched, fail_reason = False, "WARDEN not initialized on this workstation"
+                                else:
+                                    try:
+                                        duration = int(meta.get("duration", 300))
+                                    except (ValueError, TypeError):
+                                        duration = 300
+                                    WARDEN.lock_workstation(duration=duration, force=True)
+
+                            elif cmd == "unfreeze":
+                                if not WARDEN:
+                                    dispatched, fail_reason = False, "WARDEN not initialized on this workstation"
+                                else:
+                                    WARDEN.disengage_freeze()
+
                             elif cmd == "classroom_focus":
-                                # Global classroom focus feature
-                                WARDEN.lock_workstation(duration=3600, force=True) # lock for 1h or until unfreeze
-                                threading.Thread(target=show_classroom_focus_overlay, daemon=True).start()
+                                # Global classroom attention mode
+                                if WARDEN:
+                                    WARDEN.lock_workstation(duration=3600, force=True)
+                                show_classroom_focus_overlay()
+
                             elif cmd == "classroom_focus_end":
-                                WARDEN.disengage_freeze()
-                                threading.Thread(target=hide_classroom_focus_overlay, daemon=True).start()
-                            elif cmd in ("kill_task", "kill", "scalpel") and WARDEN:
-                                target = meta.get("process_name") or meta.get("process") or meta.get("target") or meta.get("target_name")
-                                if target:
-                                    WARDEN.terminate_process(target)
+                                if WARDEN:
+                                    WARDEN.disengage_freeze()
+                                hide_classroom_focus_overlay()
+
+                            elif cmd in ("kill_task", "kill", "scalpel"):
+                                if not WARDEN:
+                                    dispatched, fail_reason = False, "WARDEN not initialized on this workstation"
+                                else:
+                                    target_proc = meta.get("process_name") or meta.get("process") or meta.get("target") or meta.get("target_name")
+                                    if target_proc:
+                                        WARDEN.terminate_process(target_proc)
+                                    else:
+                                        dispatched, fail_reason = False, "No target provided in metadata"
+
+                            elif cmd == "update":
+                                download_url = meta.get("url")
+                                expected_sha256 = meta.get("sha256")
+                                if sb and not is_broadcast:
+                                    sb.table("admin_actions").update({"status": "acknowledged"}).eq("id", action_id).execute()
+                                ProfessionalOTA().perform_update(download_url, expected_sha256)
+                                return
+
                             elif cmd == "set_alias":
                                 new_alias = meta.get("alias") or meta.get("new_name") or meta.get("name")
                                 if new_alias:
@@ -4168,22 +4495,37 @@ def realtime_c2_listener(workstation_id: str) -> None:
                                             sb.table("workstations").update({"name": new_alias}).eq("id", workstation_id).execute()
                                         logger.info("Workstation alias updated via realtime", component="realtime", new_alias=new_alias)
                                     except Exception as e:
+                                        dispatched, fail_reason = False, f"alias forge failed: {e}"
                                         logger.error("Alias forge failed", component="realtime", error=str(e))
+                                else:
+                                    dispatched, fail_reason = False, "Invalid frontend metadata (no alias/new_name/name)"
+
                             else:
-                                execute_command(cmd)
-                            
-                            # Acknowledge the action
-                            try:
-                                if sb and not action_id.startswith("broadcast-"):
-                                    sb.table("admin_actions").update({"status": "acknowledged"}).eq("id", action_id).execute()
-                            except Exception:
-                                pass
-                                
+                                dispatched = execute_command(cmd)
+                                if not dispatched:
+                                    fail_reason = f"Unrecognized command: {cmd}"
+
+                            # Finalize — broadcast commands don't touch the DB
+                            if not is_broadcast:
+                                final_status = "acknowledged" if dispatched else "failed"
+                                try:
+                                    if sb:
+                                        sb.table("admin_actions").update({"status": final_status}).eq("id", action_id).execute()
+                                except Exception:
+                                    pass
+                            if not dispatched:
+                                logger.warning("Command claimed but not dispatched", component="realtime", command=cmd, action_id=action_id, reason=fail_reason)
+
                         except Exception as e:
                             logger.error("Realtime dispatch error", component="realtime", error=str(e))
-                            
+                            if sb and action_id and not is_broadcast:
+                                try:
+                                    sb.table("admin_actions").update({"status": "failed"}).eq("id", action_id).execute()
+                                except Exception:
+                                    pass
+
                     threading.Thread(target=_handle, daemon=True).start()
-                
+
                 await channel.on_postgres_changes(
                     event="INSERT",
                     schema="public",
@@ -4193,26 +4535,26 @@ def realtime_c2_listener(workstation_id: str) -> None:
                     event="admin_action",
                     callback=_on_insert
                 ).subscribe()
-                
-                # Also subscribe to global classroom channel
+
+                # Also subscribe to global classroom channel for broadcast commands
                 global_channel = client.channel("classroom:global")
                 await global_channel.on_broadcast(
                     event="admin_action",
                     callback=_on_insert
                 ).subscribe()
-                
-                logger.info("Realtime C2 channel subscribed", component="realtime", target=workstation_id)
+
+                logger.info("Realtime C2 channel subscribed (CDC + Broadcast + Global)", component="realtime", target=workstation_id)
                 backoff = 1  # Reset backoff on successful connection
-                
+
                 # Keep the connection alive
                 while True:
                     await asyncio.sleep(30)
-                    
+
             except Exception as e:
                 logger.warning(f"Realtime C2 disconnected, reconnecting in {backoff}s...", component="realtime", error=str(e))
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, max_backoff)
-    
+
     # Run the async event loop in this thread
     try:
         loop = asyncio.new_event_loop()
@@ -4238,94 +4580,165 @@ def action_loop(workstation_id: str) -> None:
                 .eq("status", "pending")
                 .execute()
             )
-            
+
             now = datetime.now(timezone.utc)
             for action in res.data or []:
-                created = _parse_iso(action.get("created_at"))
-                
-                # Check for command expiration
-                if created and (now - created) > timedelta(seconds=COMMAND_TTL_SEC):
-                    age = int((now - created).total_seconds())
-                    logger.info("EXPIRED (marking as failed)", component="actions", age=age, command=action["command"], action_id=action["id"])
-                    sb.table("admin_actions").update({"status": "failed"}).eq("id", action["id"]).execute()
-                    continue
+                # Each action is isolated in its own try/except: one bad/crashing
+                # command must not stop the rest of this batch from being
+                # processed. Previously the only try/except wrapped the whole
+                # `for` loop, so action #2+ would sit un-dispatched until the
+                # next 10s poll if action #1 raised.
+                try:
+                    created = _parse_iso(action.get("created_at"))
 
-                # NOTE: Mark 'sent' AFTER dispatch (not before) so a crash mid-command
-                # doesn't silently drop the action — it stays 'pending' and retries.
-                cmd = action["command"]
-                meta = action.get("metadata") or {}
-                
-                # 1. The JSON Armor (Neutralizes frontend double-stringification)
-                if isinstance(meta, str):
-                    try:
-                        meta = json.loads(meta)
-                    except Exception:
-                        meta = {}
+                    # Check for command expiration
+                    if created and (now - created) > timedelta(seconds=COMMAND_TTL_SEC):
+                        age = int((now - created).total_seconds())
+                        logger.info("EXPIRED (marking as failed)", component="actions", age=age, command=action["command"], action_id=action["id"])
+                        sb.table("admin_actions").update({"status": "failed"}).eq("id", action["id"]).execute()
+                        continue
 
-                # --- DISPATCH LOGIC ---
-                if cmd == "terminate":
-                    threading.Thread(target=controlled_shutdown, args=(workstation_id, action["id"]), daemon=True).start()
-                
-                elif cmd in ("freeze", "lock_hardware") and WARDEN:
-                    try:
-                        duration = int(meta.get("duration", 300))
-                    except (ValueError, TypeError):
-                        duration = 300
-                    WARDEN.lock_workstation(duration=duration, force=True)
-                
-                elif cmd == "unfreeze" and WARDEN:
-                    WARDEN.disengage_freeze()
-                
-                elif cmd in ("kill_task", "kill", "scalpel") and WARDEN:
-                    # "scalpel" retained as a legacy dashboard command alias for backward compatibility
-                    target = meta.get("process_name") or meta.get("process") or meta.get("target") or meta.get("target_name")
-                    if target:
-                        WARDEN.terminate_process(target)
-                    else:
-                        logger.warning("terminate_process: No target provided in metadata", component="actions", meta=meta)
-                        
-                elif cmd == "update":
-                    download_url = meta.get("url")
-                    expected_sha256 = meta.get("sha256")
-                    sb.table("admin_actions").update({"status": "acknowledged"}).eq("id", action["id"]).execute()
-                    ProfessionalOTA().perform_update(download_url, expected_sha256)
-                
-                # --> Indestructible Identity Forging <--
-                elif cmd == "set_alias":
-                    # 2. The Multi-Key Net (Catches 'alias', 'new_name', or 'name')
-                    new_alias = meta.get("alias") or meta.get("new_name") or meta.get("name")
-                    
-                    if new_alias:
+                    # ATOMIC CLAIM: flip pending -> processing conditioned on the
+                    # row still being 'pending'. realtime_c2_listener (WebSocket)
+                    # polls/dispatches independently of this HTTP loop; without this
+                    # compare-and-swap both consumers can read the same 'pending'
+                    # row and dispatch it twice (harmless for freeze, not harmless
+                    # for a duplicate concurrent self-update). If claim.data comes
+                    # back empty, the other consumer already took it -- skip it.
+                    claim = (
+                        sb.table("admin_actions")
+                        .update({"status": "processing"})
+                        .eq("id", action["id"])
+                        .eq("status", "pending")
+                        .select()
+                        .execute()
+                    )
+                    if not claim.data:
+                        continue
+
+                    cmd = action["command"]
+                    meta = action.get("metadata") or {}
+
+                    # 1. The JSON Armor (Neutralizes frontend double-stringification)
+                    if isinstance(meta, str):
                         try:
-                            if ALIAS_FILE.exists() and platform.system() == "Windows":
-                                subprocess.call(["attrib", "-H", str(ALIAS_FILE)], shell=False)
-                            ALIAS_FILE.write_text(new_alias, encoding="utf-8")
-                            if platform.system() == "Windows":
-                                subprocess.call(["attrib", "+H", str(ALIAS_FILE)], shell=False)
-                            
-                            sb.table("workstations").update({"name": new_alias}).eq("id", workstation_id).execute()
-                            logger.info("Workstation alias updated", component="identity", new_alias=new_alias)
-                        except Exception as e:
-                            logger.error("Alias forge failed", component="identity", error=str(e), exc_info=True)
-                    else:
-                        logger.error("Failed to forge alias. Invalid frontend metadata", component="identity", meta=meta, exc_info=True)
-                
-                else:
-                    execute_command(cmd)
+                            meta = json.loads(meta)
+                        except Exception:
+                            meta = {}
 
-                # Finalize the action
-                sb.table("admin_actions").update({"status": "acknowledged"}).eq("id", action["id"]).execute()
-                
-        
-                
+                    # --- DISPATCH LOGIC ---
+                    # `dispatched` tracks whether the command actually DID
+                    # something. Previously this loop unconditionally marked
+                    # every action "acknowledged" after the if/elif chain, even
+                    # when e.g. WARDEN was None and a freeze/unfreeze/kill_task
+                    # command fell through every WARDEN-gated branch and hit the
+                    # catch-all execute_command(cmd) no-op -- the dashboard would
+                    # show success while nothing happened on the machine.
+                    dispatched = True
+                    fail_reason = None
+
+                    if cmd == "terminate":
+                        threading.Thread(target=controlled_shutdown, args=(workstation_id, action["id"]), daemon=True).start()
+
+                    elif cmd in ("freeze", "lock_hardware"):
+                        if not WARDEN:
+                            dispatched, fail_reason = False, "WARDEN not initialized on this workstation"
+                        else:
+                            try:
+                                duration = int(meta.get("duration", 300))
+                            except (ValueError, TypeError):
+                                duration = 300
+                            WARDEN.lock_workstation(duration=duration, force=True)
+
+                    elif cmd == "unfreeze":
+                        if not WARDEN:
+                            dispatched, fail_reason = False, "WARDEN not initialized on this workstation"
+                        else:
+                            WARDEN.disengage_freeze()
+
+                    elif cmd == "classroom_focus":
+                        if WARDEN:
+                            WARDEN.lock_workstation(duration=3600, force=True)
+                        show_classroom_focus_overlay()
+
+                    elif cmd == "classroom_focus_end":
+                        if WARDEN:
+                            WARDEN.disengage_freeze()
+                        hide_classroom_focus_overlay()
+
+                    elif cmd in ("kill_task", "kill", "scalpel"):
+                        # "scalpel" retained as a legacy dashboard command alias for backward compatibility
+                        if not WARDEN:
+                            dispatched, fail_reason = False, "WARDEN not initialized on this workstation"
+                        else:
+                            target = meta.get("process_name") or meta.get("process") or meta.get("target") or meta.get("target_name")
+                            if target:
+                                WARDEN.terminate_process(target)
+                            else:
+                                dispatched, fail_reason = False, "No target provided in metadata"
+                                logger.warning("terminate_process: No target provided in metadata", component="actions", meta=meta)
+
+                    elif cmd == "update":
+                        download_url = meta.get("url")
+                        expected_sha256 = meta.get("sha256")
+                        sb.table("admin_actions").update({"status": "acknowledged"}).eq("id", action["id"]).execute()
+                        ProfessionalOTA().perform_update(download_url, expected_sha256)
+                        # perform_update() either os._exit(0)s into the new build
+                        # or fully logs+returns False on its own failure path --
+                        # the status update above already reflects "we picked
+                        # this up", so skip the shared finalize below.
+                        continue
+
+                    # --> Indestructible Identity Forging <--
+                    elif cmd == "set_alias":
+                        # 2. The Multi-Key Net (Catches 'alias', 'new_name', or 'name')
+                        new_alias = meta.get("alias") or meta.get("new_name") or meta.get("name")
+
+                        if new_alias:
+                            try:
+                                if ALIAS_FILE.exists() and platform.system() == "Windows":
+                                    subprocess.call(["attrib", "-H", str(ALIAS_FILE)], shell=False)
+                                ALIAS_FILE.write_text(new_alias, encoding="utf-8")
+                                if platform.system() == "Windows":
+                                    subprocess.call(["attrib", "+H", str(ALIAS_FILE)], shell=False)
+
+                                sb.table("workstations").update({"name": new_alias}).eq("id", workstation_id).execute()
+                                logger.info("Workstation alias updated", component="identity", new_alias=new_alias)
+                            except Exception as e:
+                                dispatched, fail_reason = False, f"alias forge failed: {e}"
+                                logger.error("Alias forge failed", component="identity", error=str(e), exc_info=True)
+                        else:
+                            dispatched, fail_reason = False, "Invalid frontend metadata (no alias/new_name/name)"
+                            logger.error("Failed to forge alias. Invalid frontend metadata", component="identity", meta=meta, exc_info=True)
+
+                    else:
+                        dispatched = execute_command(cmd)
+                        if not dispatched:
+                            fail_reason = f"Unrecognized command: {cmd}"
+
+                    # Finalize the action -- only "acknowledged" when something
+                    # actually happened; otherwise "failed" with a logged reason,
+                    # so the dashboard reflects reality instead of a rubber stamp.
+                    final_status = "acknowledged" if dispatched else "failed"
+                    sb.table("admin_actions").update({"status": final_status}).eq("id", action["id"]).execute()
+                    if not dispatched:
+                        logger.warning("Command claimed but not dispatched", component="actions", command=cmd, action_id=action["id"], reason=fail_reason)
+
+                except Exception as e:
+                    logger.error("action dispatch error (isolated -- rest of batch continues)", component="actions", action_id=action.get("id"), command=action.get("command"), error=str(e), exc_info=True)
+                    try:
+                        sb.table("admin_actions").update({"status": "failed"}).eq("id", action["id"]).execute()
+                    except Exception:
+                        pass
+
         except Exception as e:
             logger.error("actions error", component="actions", error=str(e), exc_info=True)
-            
-        time.sleep(10)  # Fallback polling — primary dispatch via Realtime WebSocket
-      
+
+        time.sleep(10)  # Fallback polling -- primary dispatch via Realtime WebSocket
+
 # ---------- Main ----------
 class BuildInfo:
-    VERSION = "6.3.5-LTS"
+    VERSION = "6.4.0-LTS"
     BUILD_DATE = "2026-06-01"
     COMMIT = "monolith-stable"
 
@@ -4420,6 +4833,13 @@ def main() -> None:
             logger.info("WMI Sinks established. Process trajectory hooked.", component="boot")
         except Exception as e:
             logger.warning(f"WMI process monitor unavailable (non-fatal): {e}", component="boot")
+
+        try:
+            start_usb_insertion_monitor()
+            start_network_adapter_monitor()
+            logger.info("Hardware/adapter monitors started.", component="boot")
+        except Exception as e:
+            logger.warning(f"Hardware/adapter monitors unavailable (non-fatal): {e}", component="boot")
         
         logger.info("Decrypting localized evidence vault...", component="vault")
         try:
@@ -4539,8 +4959,17 @@ def main() -> None:
             print(f"\n[FATAL] Agent main() crashed: {fatal_e}")
         import traceback
         traceback.print_exc()
-        # Keep the window open so the demo operator can see the error
-        input("\nPress Enter to exit...")
+        # Only block on stdin when a real, interactive console is attached
+        # (a demo operator running this by hand). Under a scheduled task or
+        # service with no attached console, input() either hangs the dead
+        # process forever (no supervisor ever sees it exit -> no restart) or
+        # raises immediately — neither of which is what "keep the window
+        # open for the operator" was going for. Exit cleanly instead.
+        try:
+            if sys.stdin is not None and sys.stdin.isatty():
+                input("\nPress Enter to exit...")
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
@@ -4630,4 +5059,10 @@ if __name__ == "__main__":
         print(f"\n\033[91m[FATAL ERROR]\033[0m {e}")
         import traceback
         traceback.print_exc()
-        input("\nPress Enter to exit...")
+        # See main()'s fatal handler: only prompt when stdin is an actual
+        # interactive terminal, never when running headless/as a service.
+        try:
+            if sys.stdin is not None and sys.stdin.isatty():
+                input("\nPress Enter to exit...")
+        except Exception:
+            pass
