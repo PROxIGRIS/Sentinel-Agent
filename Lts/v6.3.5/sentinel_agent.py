@@ -77,22 +77,18 @@ import shutil
 import tempfile
 import urllib.request
 
-# --- DEMO HARDCODED CREDENTIALS ---
-# SECURITY: this is a `service_role` key (see the decoded "role" claim), not
-# `anon` — it bypasses Row Level Security entirely. Anyone who runs `strings`
-# on the compiled exe gets full read/write on the whole Supabase project
-# (every workstation, every evidence row), independent of whether the DPAPI
-# vault below has been provisioned. Rotate this key in the Supabase dashboard.
-# Real deployments should never ship on this fallback: provision a scoped key
-# via `--provision URL KEY` (ideally the `anon` key behind tight RLS policies,
-# not service_role) so it lives only in the per-machine encrypted vault, never
-# in source or in the built exe. An env var override is provided below so CI/
-# ops can inject credentials without touching source at all. If neither an
-# env var nor a provisioned vault is present, this fallback is what runs —
-# treat any workstation you see logging the "hardcoded demo configuration"
-# warning at boot as unprovisioned and not production-ready.
-SUPABASE_URL = os.environ.get("OBYLON_SUPABASE_URL") or "https://ozruikfnrmmvhvozgnoo.supabase.co"
-SUPABASE_KEY = os.environ.get("OBYLON_SUPABASE_KEY") or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im96cnVpa2Zucm1tdmh2b3pnbm9vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3ODQ5NDc0MiwiZXhwIjoyMDk0MDcwNzQyfQ.KD_jmvsK9rWu7brpMIkpf6vfLpgkCBxsGFErdxjCh_I"
+# Activation endpoint — safe to embed (anon key + URL are not secrets, RLS is the gate)
+OBYLON_PROJECT_URL = "https://ozruikfnrmmvhvozgnoo.supabase.co"
+ENROLLMENT_ENDPOINT = f"{OBYLON_PROJECT_URL}/functions/v1"
+OBYLON_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im96cnVpa2Zucm1tdmh2b3pnbm9vIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0OTQ3NDIsImV4cCI6MjA5NDA3MDc0Mn0.tTWJnVrIUJqE1jXDGsFQ0kHVUJhICQl1Q_DUpSZjjVE"
+
+# Session credentials — populated from DPAPI vault at boot, never hardcoded
+SUPABASE_URL = None
+SUPABASE_KEY = None  # Will hold the anon key after activation
+ACCESS_TOKEN = None
+REFRESH_TOKEN = None
+LICENSE_ID = None
+NODE_ID = None
 
 # --- STEALTH MONKEY-PATCH FOR WINDOWS ---
 # Prevents tesseract.exe from flashing a visible command prompt on the student's screen
@@ -388,11 +384,24 @@ WARDEN: WorkstationGuard = None  # Initialized at boot in __main__ to avoid wast
 sb: Client = None  # Will be initialized at runtime by the Vault
 
 def _build_supabase_client():
+    global ACCESS_TOKEN, REFRESH_TOKEN
     # School Supabase endpoints have standard Let's Encrypt certificates, so verify=certifi.where() is completely safe and required.
-    return create_client(
+    client = create_client(
         SUPABASE_URL, SUPABASE_KEY,
-        options=ClientOptions(httpx_client=httpx.Client(verify=certifi.where(), timeout=30.0))
+        options=ClientOptions(httpx_client=httpx.Client(verify=certifi.where(), timeout=30.0), auto_refresh_token=True, persist_session=False)
     )
+    # Set the session from vault credentials
+    if ACCESS_TOKEN and REFRESH_TOKEN:
+        client.auth.set_session(ACCESS_TOKEN, REFRESH_TOKEN)
+        # Refresh if needed and update vault
+        session = client.auth.get_session()
+        if session and session.access_token != ACCESS_TOKEN:
+            ACCESS_TOKEN = session.access_token
+            REFRESH_TOKEN = session.refresh_token
+            vault._data["ACCESS_TOKEN"] = ACCESS_TOKEN
+            vault._data["REFRESH_TOKEN"] = REFRESH_TOKEN
+            vault._save()
+    return client
 
 CRYPTPROTECT_LOCAL_MACHINE = 0x04
 
@@ -470,20 +479,63 @@ class ObylonVault:
                 ctypes.windll.kernel32.SetFileAttributesW(str(self.config_file), 128)
             except Exception: pass
 
-    def provision(self, supabase_url: str, supabase_key: str):
-        self._data = {"SUPABASE_URL": supabase_url, "SUPABASE_KEY": supabase_key}
+    def _save(self):
         json_str = json.dumps(self._data)
         encrypted = self._encrypt(json_str.encode("utf-8"))
-        
-        # Remove hidden attribute so we can write
         self._unhide_file()
-            
-        with open(self.config_file, "wb") as f: 
+        with open(self.config_file, "wb") as f:
             f.write(encrypted)
-            
         try: ctypes.windll.kernel32.SetFileAttributesW(str(self.config_file), 2)
         except Exception: pass
-        logger.info("🔒 Obylon DPAPI Vault provisioned.", component="vault")
+
+    def provision_via_license(self, license_key: str, hostname: str, hardware_uuid: str, hardware_fingerprint: str) -> bool:
+        try:
+            payload = {
+                "license_key": license_key,
+                "hostname": hostname,
+                "hardware_uuid": hardware_uuid,
+                "hardware_fingerprint": hardware_fingerprint
+            }
+            req = urllib.request.Request(
+                f"{ENROLLMENT_ENDPOINT}/activate",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"apikey": OBYLON_ANON_KEY, "Content-Type": "application/json"}
+            )
+            import ssl, certifi
+            context = ssl.create_default_context(cafile=certifi.where())
+            with urllib.request.urlopen(req, context=context) as response:
+                body = response.read().decode("utf-8")
+                data = json.loads(body)
+                self._data = {
+                    "SUPABASE_URL": data.get("supabase_url"),
+                    "SUPABASE_ANON_KEY": data.get("anon_key"),
+                    "ACCESS_TOKEN": data.get("access_token"),
+                    "REFRESH_TOKEN": data.get("refresh_token"),
+                    "LICENSE_ID": data.get("license_id"),
+                    "NODE_ID": data.get("node_id"),
+                    "LICENSE_STATUS": "active",
+                    "LAST_HEARTBEAT_OK_AT": datetime.now(timezone.utc).isoformat()
+                }
+                self._save()
+                logger.info("🔒 Obylon DPAPI Vault provisioned via license.", component="vault")
+                return True
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8")
+            try:
+                err_data = json.loads(body)
+                err_type = err_data.get("error", "unknown")
+                if err_type == "node_limit_reached":
+                    print(f"Activation failed: Node limit reached ({err_data.get('active_nodes')}/{err_data.get('node_limit')}). Contact {err_data.get('support_contact')}.")
+                elif err_type in ("license_expired", "license_revoked", "license_suspended", "invalid_key"):
+                    print(f"Activation failed: {err_type.replace('_', ' ').capitalize()}.")
+                else:
+                    print(f"Activation failed: {err_type}")
+            except Exception:
+                print(f"Activation failed: HTTP {e.code}")
+            return False
+        except Exception as e:
+            print(f"Activation error: {e}")
+            return False
 
     def get(self, key: str) -> str:
         return self._data.get(key, "")
@@ -2295,6 +2347,31 @@ def load_or_create_hardware_uuid() -> str:
 
 
 HARDWARE_UUID = load_or_create_hardware_uuid()
+
+def get_hardware_fingerprint() -> str:
+    components = []
+    try:
+        uuid_out = subprocess.check_output(['powershell', '-Command', "(Get-CimInstance Win32_ComputerSystemProduct).UUID"], creationflags=0x08000000, text=True).strip()
+        components.append(uuid_out if uuid_out else 'unknown')
+    except Exception:
+        components.append('unknown')
+    
+    try:
+        disk_out = subprocess.check_output(['powershell', '-Command', "(Get-CimInstance Win32_DiskDrive | Select-Object -First 1).SerialNumber"], creationflags=0x08000000, text=True).strip()
+        components.append(disk_out if disk_out else 'unknown')
+    except Exception:
+        components.append('unknown')
+        
+    try:
+        mac_out = subprocess.check_output(['powershell', '-Command', "(Get-CimInstance Win32_NetworkAdapter -Filter 'PhysicalAdapter=True' | Select-Object -First 1).MACAddress"], creationflags=0x08000000, text=True).strip()
+        components.append(mac_out if mac_out else 'unknown')
+    except Exception:
+        components.append('unknown')
+
+    combined = "|".join(components)
+    return hashlib.sha256(combined.encode('utf-8')).hexdigest()
+
+HARDWARE_FINGERPRINT = get_hardware_fingerprint()
 
 
 def register_workstation() -> str:
@@ -4369,8 +4446,8 @@ def realtime_c2_listener(workstation_id: str) -> None:
                 logger.info("Connecting to Supabase Realtime WebSocket...", component="realtime")
                 client = AsyncRealtimeClient(
                     ws_url,
-                    token=SUPABASE_KEY,
-                    params={"apikey": SUPABASE_KEY}
+                    token=ACCESS_TOKEN,
+                    params={"apikey": OBYLON_ANON_KEY}
                 )
                 await client.connect()
 
@@ -4811,6 +4888,45 @@ class BuildInfo:
         except Exception:
             pass
 
+def license_heartbeat_loop(workstation_id: str):
+    while True:
+        try:
+            time.sleep(86400) # Every 24 hours
+            payload = {"hardware_uuid": HARDWARE_UUID}
+            req = urllib.request.Request(
+                f"{ENROLLMENT_ENDPOINT}/license_heartbeat",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
+            )
+            import ssl, certifi
+            context = ssl.create_default_context(cafile=certifi.where())
+            with urllib.request.urlopen(req, context=context) as response:
+                data = json.loads(response.read().decode("utf-8"))
+                status = data.get("status")
+                vault._data["LAST_HEARTBEAT_OK_AT"] = datetime.now(timezone.utc).isoformat()
+                vault._data["LICENSE_STATUS"] = status
+                vault._save()
+                
+                if status in ("revoked", "suspended"):
+                    logger.critical(f"License is {status}, shutting down.", component="license")
+                    sys.exit(1)
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                logger.critical(f"License heartbeat rejected: {e.code}", component="license")
+                sys.exit(1)
+        except Exception as e:
+            logger.error(f"License heartbeat error: {e}", component="license")
+            # Offline tolerance
+            last_ok = vault.get("LAST_HEARTBEAT_OK_AT")
+            if last_ok:
+                try:
+                    last_ok_dt = datetime.fromisoformat(last_ok)
+                    if datetime.now(timezone.utc) - last_ok_dt > timedelta(days=7):
+                        logger.critical("Offline tolerance exceeded (7 days). Shutting down.", component="license")
+                        sys.exit(1)
+                except Exception:
+                    pass
+
 def harden_installation():
     """Hide everything important from casual snooping."""
     paths_to_hide = [
@@ -4863,6 +4979,7 @@ def main() -> None:
 
         # Define all critical systems for the Necromancer to watch
         core_systems = {
+            "license_heartbeat": {"target": license_heartbeat_loop, "args": (wid,)},
             "heartbeat": {"target": heartbeat_loop, "args": (wid,)},
             "scanner": {"target": scan_loop, "args": (wid,)},
             "actions": {"target": action_loop, "args": (wid,)},
@@ -4975,29 +5092,46 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         parser = argparse.ArgumentParser(description="Obylon Endpoint Agent")
-        parser.add_argument("--provision", nargs=2, metavar=('URL', 'KEY'), help="Inject DPAPI keys (One-time setup)")
+        subparsers = parser.add_subparsers(dest="command")
+        
+        activate_parser = subparsers.add_parser("activate", help="Activate agent with a license key")
+        activate_parser.add_argument("LICENSE_KEY", help="The license key to activate")
+        
+        status_parser = subparsers.add_parser("status", help="Print license status")
+        
         args = parser.parse_args()
         BuildInfo.print_banner()
         harden_installation()
 
         # 1. The Provisioning Path (IT Admin Command Line)
-        if args.provision:
-            vault.provision(args.provision[0], args.provision[1])
-            logger.info("Provisioning complete. Agent ready for background execution.", component="system")
+        if args.command == "activate":
+            import platform
+            hostname = platform.node()
+            success = vault.provision_via_license(args.LICENSE_KEY, hostname, HARDWARE_UUID, HARDWARE_FINGERPRINT)
+            if success:
+                logger.info("Activation complete. Agent ready for background execution.", component="system")
+                sys.exit(0)
+            else:
+                sys.exit(1)
+        elif args.command == "status":
+            vault.load()
+            print(f"License ID: {vault.get('LICENSE_ID')}")
+            print(f"Node ID: {vault.get('NODE_ID')}")
+            print(f"Status: {vault.get('LICENSE_STATUS')}")
+            print(f"Last Heartbeat: {vault.get('LAST_HEARTBEAT_OK_AT')}")
             sys.exit(0)
 
         # 2. The Standard Boot Path
-        if not vault.load():
-            logger.warning("DPAPI vault missing. Proceeding with hardcoded configuration.", component="system")
+        if not vault.load() or not vault.get("ACCESS_TOKEN"):
+            logger.critical("Vault incomplete or missing session. Run: obylon activate <LICENSE_KEY>", component="system")
+            sys.exit(1)
 
-        v_url = vault.get("SUPABASE_URL")
-        v_key = vault.get("SUPABASE_KEY")
-        
-        if v_url and v_key:
-            SUPABASE_URL = v_url
-            SUPABASE_KEY = v_key
-        else:
-            logger.warning("No credentials found in DPAPI vault. Falling back to hardcoded demo credentials.", component="system")
+        SUPABASE_URL = vault.get("SUPABASE_URL")
+        SUPABASE_KEY = vault.get("SUPABASE_ANON_KEY")
+        ACCESS_TOKEN = vault.get("ACCESS_TOKEN")
+        REFRESH_TOKEN = vault.get("REFRESH_TOKEN")
+        LICENSE_ID = vault.get("LICENSE_ID")
+        NODE_ID = vault.get("NODE_ID")
 
         # Sync remote config from DPAPI vault at boot - Safe fallback for clean deployments
         raw_log_vault = vault.get("LOG_ONLY_MODE")
