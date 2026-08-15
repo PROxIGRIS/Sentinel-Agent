@@ -490,7 +490,7 @@ class ObylonVault:
         try: ctypes.windll.kernel32.SetFileAttributesW(str(self.config_file), 2)
         except Exception: pass
 
-    def provision_via_license(self, license_key: str, hostname: str, hardware_uuid: str, hardware_fingerprint: str) -> bool:
+    def provision_via_license(self, license_key: str, hostname: str, hardware_uuid: str, hardware_fingerprint: str) -> str:
         try:
             payload = {
                 "license_key": license_key,
@@ -520,7 +520,7 @@ class ObylonVault:
                 }
                 self._save()
                 logger.info("🔒 Obylon DPAPI Vault provisioned via license.", component="vault")
-                return True
+                return "SUCCESS"
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8")
             try:
@@ -534,10 +534,13 @@ class ObylonVault:
                     print(f"Activation failed: {err_type}")
             except Exception:
                 print(f"Activation failed: HTTP {e.code}")
-            return False
+            return "HARD_ERROR"
+        except urllib.error.URLError as e:
+            print(f"Activation network error: {e}")
+            return "NETWORK_ERROR"
         except Exception as e:
             print(f"Activation error: {e}")
-            return False
+            return "HARD_ERROR"
 
     def get(self, key: str) -> str:
         return self._data.get(key, "")
@@ -4917,7 +4920,7 @@ def license_heartbeat_loop(workstation_id: str):
     global ACCESS_TOKEN, REFRESH_TOKEN
     while True:
         try:
-            time.sleep(86400) # Every 24 hours
+            time.sleep(300) # Every 5 minutes (for token rotation sync)
             
             # Sync token rotation from Supabase client background refresh
             if sb:
@@ -5162,8 +5165,32 @@ if __name__ == "__main__":
 
         # 2. The Standard Boot Path
         if not vault.load() or not vault.get("ACCESS_TOKEN"):
-            logger.critical("Vault incomplete or missing session. Run: obylon activate <LICENSE_KEY>", component="system")
-            sys.exit(1)
+            seed_file = Path(os.environ.get('PROGRAMDATA', 'C:\\ProgramData')) / "Obylon" / "license_seed.txt"
+            if seed_file.exists():
+                logger.info("Found license_seed.txt. Initiating zero-touch fleet ignition...", component="system")
+                try:
+                    seed_key = seed_file.read_text(encoding="utf-8").strip()
+                    import platform
+                    hostname = platform.node()
+                    while True:
+                        status = vault.provision_via_license(seed_key, hostname, HARDWARE_UUID, HARDWARE_FINGERPRINT)
+                        if status == "SUCCESS":
+                            try: os.remove(seed_file)
+                            except Exception: pass
+                            logger.info("Fleet ignition complete. Agent ready.", component="system")
+                            break
+                        elif status == "NETWORK_ERROR":
+                            logger.warning("Network unreachable during seed ignition. Retrying in 60s...", component="system")
+                            time.sleep(60)
+                        else:
+                            logger.critical("Hard error during seed ignition. Shutting down.", component="system")
+                            sys.exit(1)
+                except Exception as e:
+                    logger.critical(f"Seed file read error: {e}", component="system")
+                    sys.exit(1)
+            else:
+                logger.critical("Vault incomplete or missing session. Run: obylon activate <LICENSE_KEY>", component="system")
+                sys.exit(1)
 
         SUPABASE_URL = vault.get("SUPABASE_URL")
         SUPABASE_KEY = vault.get("SUPABASE_ANON_KEY")
