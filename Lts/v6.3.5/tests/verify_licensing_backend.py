@@ -111,7 +111,7 @@ node1_node_id = body.get("node_id") if status == 200 else None
 status, body = activate(str(uuid.uuid4()), str(uuid.uuid4()), key="not-a-real-key")
 record(
     "Invalid key is rejected",
-    status in (401, 403) and body.get("error") == "invalid_key",
+    status in (401, 403) and body.get("error") == "Invalid license key",
     f"HTTP {status}: {body}",
 )
 
@@ -120,6 +120,7 @@ record(
 #    rebind to node 1's existing row, not consume a new seat.
 reinstalled_uuid = f"verify-{uuid.uuid4()}"
 status, body = activate(reinstalled_uuid, node1_fp)
+reinstalled_access_token = body.get("access_token")
 record(
     "Same-fingerprint reactivation rebinds (doesn't consume a new seat)",
     status == 200 and body.get("node_id") == node1_node_id,
@@ -148,9 +149,10 @@ record(
     f"accepted {accepted} node(s) before rejection; last response HTTP {last_status}: {last_body}",
 )
 
-# 5. Heartbeat reflects current status for an active node
-if node1_token:
-    status, body = heartbeat(node1_token, node1_uuid)
+# 5. Heartbeat succeeds for an active node
+#    Uses the rebound node's credentials to hit the heartbeat endpoint
+if reinstalled_access_token:
+    status, body = heartbeat(reinstalled_access_token, reinstalled_uuid)
     record(
         "Heartbeat succeeds for an active node",
         status == 200 and body.get("status") == "active",
