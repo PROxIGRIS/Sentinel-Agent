@@ -4466,10 +4466,10 @@ def realtime_c2_listener(workstation_id: str) -> None:
                 logger.info("Connecting to Supabase Realtime WebSocket...", component="realtime")
                 client = AsyncRealtimeClient(
                     ws_url,
-                    token=ACCESS_TOKEN,
-                    params={"apikey": OBYLON_ANON_KEY}
+                    token=OBYLON_ANON_KEY
                 )
                 await client.connect()
+                await client.set_auth(ACCESS_TOKEN)
 
                 channel = client.channel(f"admin_actions:{workstation_id}")
 
