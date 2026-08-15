@@ -529,12 +529,21 @@ class ObylonVault:
             try:
                 err_data = json.loads(body)
                 err_type = err_data.get("error", "unknown")
+                err_msg = ""
                 if err_type == "node_limit_reached":
-                    print(f"Activation failed: Node limit reached ({err_data.get('active_nodes')}/{err_data.get('node_limit')}). Contact {err_data.get('support_contact')}.")
+                    err_msg = f"Activation failed: Node limit reached ({err_data.get('active_nodes')}/{err_data.get('node_limit')}). Contact {err_data.get('support_contact')}."
                 elif err_type in ("license_expired", "license_revoked", "license_suspended", "invalid_key"):
-                    print(f"Activation failed: {err_type.replace('_', ' ').capitalize()}.")
+                    err_msg = f"Activation failed: {err_type.replace('_', ' ').capitalize()}."
                 else:
-                    print(f"Activation failed: {err_type}")
+                    err_msg = f"Activation failed: {err_type}"
+                
+                print(err_msg)
+                import tkinter as tk
+                from tkinter import messagebox
+                root = tk.Tk()
+                root.withdraw()
+                root.attributes('-topmost', True)
+                messagebox.showerror("Obylon Sentinel - Activation Failed", err_msg)
             except Exception:
                 print(f"Activation failed: HTTP {e.code}")
             return "HARD_ERROR"
@@ -4486,7 +4495,13 @@ def realtime_c2_listener(workstation_id: str) -> None:
                         logger.critical(f"Realtime C2: License revoked ({status}). Initiating shutdown.", component="realtime")
                         LICENSE_INVALID_EVENT.set()
                 
-                license_channel.on("postgres_changes", event="UPDATE", schema="public", table="licenses", filter=f"id=eq.{LICENSE_ID}", callback=_on_license_update)
+                license_channel.on_postgres_changes(
+                    event="UPDATE",
+                    schema="public",
+                    table="licenses",
+                    filter=f"id=eq.{LICENSE_ID}",
+                    callback=_on_license_update
+                )
                 await license_channel.subscribe()
 
                 def _on_insert(payload):
@@ -5224,10 +5239,41 @@ if __name__ == "__main__":
                 logger.critical("Vault incomplete or missing session. Run: obylon activate <LICENSE_KEY>", component="system")
                 sys.exit(1)
 
-        # Immediate boot-time license check
-        boot_status = vault.get("LICENSE_STATUS")
+        # Immediate boot-time license check (Try Online First)
+        try:
+            import ssl, certifi, urllib.request, json
+            payload = {"hardware_uuid": HARDWARE_UUID}
+            req = urllib.request.Request(
+                f"{ENROLLMENT_ENDPOINT}/license_heartbeat",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Authorization": f"Bearer {vault.get('ACCESS_TOKEN')}", "Content-Type": "application/json"}
+            )
+            ctx = ssl.create_default_context(cafile=certifi.where())
+            with urllib.request.urlopen(req, context=ctx, timeout=5) as response:
+                data = json.loads(response.read().decode("utf-8"))
+                boot_status = data.get("status")
+                vault._data["LAST_HEARTBEAT_OK_AT"] = datetime.now(timezone.utc).isoformat()
+                vault._data["LICENSE_STATUS"] = boot_status
+                if data.get("expires_at"): vault._data["EXPIRES_AT"] = data.get("expires_at")
+                if data.get("grace_days"): vault._data["GRACE_DAYS"] = data.get("grace_days")
+                vault._save()
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                boot_status = "revoked"
+                vault._data["LICENSE_STATUS"] = boot_status
+                vault._save()
+        except Exception:
+            boot_status = vault.get("LICENSE_STATUS") # Offline fallback
+
         if boot_status in ("revoked", "suspended", "expired"):
             logger.critical(f"License is currently {boot_status}. Shutting down.", component="system")
+            # Show popup before exiting
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes('-topmost', True)
+            messagebox.showerror("Obylon Sentinel - License Error", f"This workstation's license is {boot_status}. Please contact your IT administrator to restore access.")
             sys.exit(1)
             
         last_ok = vault.get("LAST_HEARTBEAT_OK_AT")
