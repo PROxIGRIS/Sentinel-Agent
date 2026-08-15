@@ -382,6 +382,8 @@ class WorkstationGuard:
 
 WARDEN: WorkstationGuard = None  # Initialized at boot in __main__ to avoid wasted hooks
 sb: Client = None  # Will be initialized at runtime by the Vault
+import threading
+TOKEN_ROTATED_EVENT = threading.Event()
 
 def _build_supabase_client():
     global ACCESS_TOKEN, REFRESH_TOKEN
@@ -2351,22 +2353,36 @@ HARDWARE_UUID = load_or_create_hardware_uuid()
 def get_hardware_fingerprint() -> str:
     components = []
     try:
-        uuid_out = subprocess.check_output(['powershell', '-Command', "(Get-CimInstance Win32_ComputerSystemProduct).UUID"], creationflags=0x08000000, text=True).strip()
-        components.append(uuid_out if uuid_out else 'unknown')
-    except Exception:
-        components.append('unknown')
-    
-    try:
-        disk_out = subprocess.check_output(['powershell', '-Command', "(Get-CimInstance Win32_DiskDrive | Select-Object -First 1).SerialNumber"], creationflags=0x08000000, text=True).strip()
-        components.append(disk_out if disk_out else 'unknown')
-    except Exception:
-        components.append('unknown')
+        import wmi
+        c = wmi.WMI()
         
-    try:
-        mac_out = subprocess.check_output(['powershell', '-Command', "(Get-CimInstance Win32_NetworkAdapter -Filter 'PhysicalAdapter=True' | Select-Object -First 1).MACAddress"], creationflags=0x08000000, text=True).strip()
-        components.append(mac_out if mac_out else 'unknown')
+        # Motherboard UUID
+        try:
+            uuid_val = c.Win32_ComputerSystemProduct()[0].UUID
+            components.append(uuid_val.strip() if uuid_val else 'unknown')
+        except Exception:
+            components.append('unknown')
+            
+        # Disk Serial
+        try:
+            disk_val = c.Win32_DiskDrive()[0].SerialNumber
+            components.append(disk_val.strip() if disk_val else 'unknown')
+        except Exception:
+            components.append('unknown')
+            
+        # MAC Address
+        try:
+            mac_val = None
+            for adapter in c.Win32_NetworkAdapter(PhysicalAdapter=True):
+                if adapter.MACAddress:
+                    mac_val = adapter.MACAddress
+                    break
+            components.append(mac_val.strip() if mac_val else 'unknown')
+        except Exception:
+            components.append('unknown')
+            
     except Exception:
-        components.append('unknown')
+        components = ['unknown', 'unknown', 'unknown']
 
     combined = "|".join(components)
     return hashlib.sha256(combined.encode('utf-8')).hexdigest()
@@ -4625,7 +4641,16 @@ def realtime_c2_listener(workstation_id: str) -> None:
 
                 # Keep the connection alive
                 while True:
-                    await asyncio.sleep(30)
+                    if TOKEN_ROTATED_EVENT.is_set():
+                        logger.info("Token rotated, forcing Realtime C2 reconnect...", component="realtime")
+                        TOKEN_ROTATED_EVENT.clear()
+                        # Disconnect safely to trigger the outer reconnect loop with new ACCESS_TOKEN
+                        try:
+                            await client.close()
+                        except Exception:
+                            pass
+                        break
+                    await asyncio.sleep(5)
 
             except Exception as e:
                 logger.warning(f"Realtime C2 disconnected, reconnecting in {backoff}s...", component="realtime", error=str(e))
@@ -4889,9 +4914,23 @@ class BuildInfo:
             pass
 
 def license_heartbeat_loop(workstation_id: str):
+    global ACCESS_TOKEN, REFRESH_TOKEN
     while True:
         try:
             time.sleep(86400) # Every 24 hours
+            
+            # Sync token rotation from Supabase client background refresh
+            if sb:
+                session = sb.auth.get_session()
+                if session and session.access_token != ACCESS_TOKEN:
+                    ACCESS_TOKEN = session.access_token
+                    REFRESH_TOKEN = session.refresh_token
+                    vault._data["ACCESS_TOKEN"] = ACCESS_TOKEN
+                    vault._data["REFRESH_TOKEN"] = REFRESH_TOKEN
+                    vault._save()
+                    TOKEN_ROTATED_EVENT.set()
+                    logger.info("Session token rotated, signaled C2 reconnect", component="license")
+
             payload = {"hardware_uuid": HARDWARE_UUID}
             req = urllib.request.Request(
                 f"{ENROLLMENT_ENDPOINT}/license_heartbeat",
