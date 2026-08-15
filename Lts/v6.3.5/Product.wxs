@@ -65,7 +65,14 @@
         <!-- Custom Action for Scheduled Task -->
         <CustomAction Id="RegisterStartupTask"
                       Directory="INSTALLFOLDER"
-                      ExeCommand="schtasks /Create /TN &quot;ObylonAgent&quot; /TR &quot;\&quot;[INSTALLFOLDER]obylon.exe\&quot;&quot; /SC ONSTART /RL HIGHEST /F"
+                      ExeCommand="schtasks /Create /TN &quot;ObylonAgent&quot; /TR &quot;[INSTALLFOLDER]obylon.exe&quot; /SC ONSTART /RL HIGHEST /F"
+                      Execute="deferred"
+                      Impersonate="no"
+                      Return="ignore" />
+                      
+        <CustomAction Id="RemoveStartupTask"
+                      Directory="INSTALLFOLDER"
+                      ExeCommand="schtasks /Delete /TN &quot;ObylonAgent&quot; /F"
                       Execute="deferred"
                       Impersonate="no"
                       Return="ignore" />
@@ -88,6 +95,10 @@
             
             <Custom Action="RegisterStartupTask" After="InstallFiles">
                 <![CDATA[NOT Installed]]>
+            </Custom>
+            
+            <Custom Action="RemoveStartupTask" Before="RemoveFiles">
+                <![CDATA[REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE]]>
             </Custom>
         </InstallExecuteSequence>
 
