@@ -5029,7 +5029,6 @@ def main() -> None:
             "heartbeat": {"target": heartbeat_loop, "args": (wid,)},
             "scanner": {"target": scan_loop, "args": (wid,)},
             "actions": {"target": action_loop, "args": (wid,)},
-            "sovereignty": {"target": listen_for_sovereignty, "args": ()},
             "panic": {"target": hardware_panic_listener, "args": ()},
             "sync_surge": {"target": sync_daemon, "args": ()},
             "optics_ws": {"target": boot_optics_server, "args": ()},
