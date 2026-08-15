@@ -127,7 +127,7 @@ except ImportError:
 # --- ENTERPRISE LOGGING ---
 def custom_log_renderer(logger, name, event_dict):
     timestamp = event_dict.pop("timestamp", "")
-    if " " in timestamp: timestamp = timestamp.split(" ")[1]
+    if " " in timestamp: timestamp = timestamp.split(" ")[1][:-3]
     
     level = event_dict.pop("level", "info").lower()
     component = event_dict.pop("component", "system").lower()
@@ -169,7 +169,7 @@ def setup_structlog():
     structlog.configure(
         processors=[
             structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S", utc=False),
+            structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S.%f", utc=False),
             custom_log_renderer,
         ],
         logger_factory=structlog.PrintLoggerFactory(),
@@ -3093,8 +3093,11 @@ def log_ambient(workstation_id: str, title: str | None, proc: str | None,
 def _supabase_alive() -> bool:
     """Lightweight reachability probe. Cheap & non-mutating."""
     try:
-        # Use vault.get() instead of the deleted ghost variables
         url = SUPABASE_URL
+        if not url:
+            try: vault.load()
+            except Exception: pass
+            url = vault.get("SUPABASE_URL")
         if not url: return False
         
         host = url.replace("https://", "").replace("http://", "").split("/")[0]
