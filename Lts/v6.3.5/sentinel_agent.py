@@ -517,7 +517,9 @@ class ObylonVault:
                     "LICENSE_ID": data.get("license_id"),
                     "NODE_ID": data.get("node_id"),
                     "LICENSE_STATUS": "active",
-                    "LAST_HEARTBEAT_OK_AT": datetime.now(timezone.utc).isoformat()
+                    "LAST_HEARTBEAT_OK_AT": datetime.now(timezone.utc).isoformat(),
+                    "EXPIRES_AT": data.get("expires_at"),
+                    "GRACE_DAYS": data.get("grace_days", 14)
                 }
                 self._save()
                 logger.info("🔒 Obylon DPAPI Vault provisioned via license.", component="vault")
@@ -4475,6 +4477,17 @@ def realtime_c2_listener(workstation_id: str) -> None:
                 await client.set_auth(ACCESS_TOKEN)
 
                 channel = client.channel(f"admin_actions:{workstation_id}")
+                
+                license_channel = client.channel(f"licenses:{LICENSE_ID}")
+                def _on_license_update(payload):
+                    record = payload.get("record") or payload.get("new") or {}
+                    status = record.get("status")
+                    if status in ("revoked", "suspended", "expired"):
+                        logger.critical(f"Realtime C2: License revoked ({status}). Initiating shutdown.", component="realtime")
+                        LICENSE_INVALID_EVENT.set()
+                
+                license_channel.on("postgres_changes", event="UPDATE", schema="public", table="licenses", filter=f"id=eq.{LICENSE_ID}", callback=_on_license_update)
+                await license_channel.subscribe()
 
                 def _on_insert(payload):
                     """Instant command dispatch on WebSocket event.
@@ -4924,8 +4937,6 @@ def license_heartbeat_loop(workstation_id: str):
     global ACCESS_TOKEN, REFRESH_TOKEN
     while True:
         try:
-            time.sleep(300) # Every 5 minutes (for token rotation sync)
-            
             # Sync token rotation from Supabase client background refresh
             if sb:
                 session = sb.auth.get_session()
@@ -4951,9 +4962,11 @@ def license_heartbeat_loop(workstation_id: str):
                 status = data.get("status")
                 vault._data["LAST_HEARTBEAT_OK_AT"] = datetime.now(timezone.utc).isoformat()
                 vault._data["LICENSE_STATUS"] = status
+                if data.get("expires_at"): vault._data["EXPIRES_AT"] = data.get("expires_at")
+                if data.get("grace_days"): vault._data["GRACE_DAYS"] = data.get("grace_days")
                 vault._save()
                 
-                if status in ("revoked", "suspended"):
+                if status in ("revoked", "suspended", "expired"):
                     logger.critical(f"License is {status}, shutting down.", component="license")
                     LICENSE_INVALID_EVENT.set()
                     return
@@ -4964,17 +4977,20 @@ def license_heartbeat_loop(workstation_id: str):
                 return
         except Exception as e:
             logger.error(f"License heartbeat error: {e}", component="license")
-            # Offline tolerance
+            # Offline tolerance based on saved bounds
             last_ok = vault.get("LAST_HEARTBEAT_OK_AT")
+            grace = int(vault.get("GRACE_DAYS") or 14)
             if last_ok:
                 try:
                     last_ok_dt = datetime.fromisoformat(last_ok)
-                    if datetime.now(timezone.utc) - last_ok_dt > timedelta(days=7):
-                        logger.critical("Offline tolerance exceeded (7 days). Shutting down.", component="license")
+                    if datetime.now(timezone.utc) - last_ok_dt > timedelta(days=grace):
+                        logger.critical(f"Offline tolerance exceeded ({grace} days). Shutting down.", component="license")
                         LICENSE_INVALID_EVENT.set()
                         return
                 except Exception:
                     pass
+        
+        time.sleep(300) # Every 5 minutes
 
 def harden_installation():
     """Hide everything important from casual snooping."""
@@ -5207,6 +5223,23 @@ if __name__ == "__main__":
             else:
                 logger.critical("Vault incomplete or missing session. Run: obylon activate <LICENSE_KEY>", component="system")
                 sys.exit(1)
+
+        # Immediate boot-time license check
+        boot_status = vault.get("LICENSE_STATUS")
+        if boot_status in ("revoked", "suspended", "expired"):
+            logger.critical(f"License is currently {boot_status}. Shutting down.", component="system")
+            sys.exit(1)
+            
+        last_ok = vault.get("LAST_HEARTBEAT_OK_AT")
+        grace = int(vault.get("GRACE_DAYS") or 14)
+        if last_ok:
+            try:
+                last_ok_dt = datetime.fromisoformat(last_ok)
+                if datetime.now(timezone.utc) - last_ok_dt > timedelta(days=grace):
+                    logger.critical(f"Offline tolerance exceeded ({grace} days). Shutting down.", component="system")
+                    sys.exit(1)
+            except Exception:
+                pass
 
         SUPABASE_URL = vault.get("SUPABASE_URL")
         SUPABASE_KEY = vault.get("SUPABASE_ANON_KEY")
