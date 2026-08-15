@@ -384,6 +384,7 @@ WARDEN: WorkstationGuard = None  # Initialized at boot in __main__ to avoid wast
 sb: Client = None  # Will be initialized at runtime by the Vault
 import threading
 TOKEN_ROTATED_EVENT = threading.Event()
+LICENSE_INVALID_EVENT = threading.Event()
 
 def _build_supabase_client():
     global ACCESS_TOKEN, REFRESH_TOKEN
@@ -4951,11 +4952,13 @@ def license_heartbeat_loop(workstation_id: str):
                 
                 if status in ("revoked", "suspended"):
                     logger.critical(f"License is {status}, shutting down.", component="license")
-                    sys.exit(1)
+                    LICENSE_INVALID_EVENT.set()
+                    return
         except urllib.error.HTTPError as e:
             if e.code in (401, 403):
                 logger.critical(f"License heartbeat rejected: {e.code}", component="license")
-                sys.exit(1)
+                LICENSE_INVALID_EVENT.set()
+                return
         except Exception as e:
             logger.error(f"License heartbeat error: {e}", component="license")
             # Offline tolerance
@@ -4965,7 +4968,8 @@ def license_heartbeat_loop(workstation_id: str):
                     last_ok_dt = datetime.fromisoformat(last_ok)
                     if datetime.now(timezone.utc) - last_ok_dt > timedelta(days=7):
                         logger.critical("Offline tolerance exceeded (7 days). Shutting down.", component="license")
-                        sys.exit(1)
+                        LICENSE_INVALID_EVENT.set()
+                        return
                 except Exception:
                     pass
 
@@ -5073,6 +5077,13 @@ def main() -> None:
         try:
             while True:
                 try:
+                    if LICENSE_INVALID_EVENT.is_set():
+                        logger.critical("License invalidation confirmed by main thread. Initiating clean shutdown.", component="system")
+                        if WARDEN:
+                            try: WARDEN.stop()
+                            except Exception: pass
+                        sys.exit(1)
+                        
                     time.sleep(15) # Check pulse every 15 seconds
                     
                     for name, thread in list(active_threads.items()):
@@ -5149,10 +5160,13 @@ if __name__ == "__main__":
         if args.command == "activate":
             import platform
             hostname = platform.node()
-            success = vault.provision_via_license(args.LICENSE_KEY, hostname, HARDWARE_UUID, HARDWARE_FINGERPRINT)
-            if success:
+            status = vault.provision_via_license(args.LICENSE_KEY, hostname, HARDWARE_UUID, HARDWARE_FINGERPRINT)
+            if status == "SUCCESS":
                 logger.info("Activation complete. Agent ready for background execution.", component="system")
                 sys.exit(0)
+            elif status == "NETWORK_ERROR":
+                logger.error("Activation failed: network unreachable. Check connectivity and retry.", component="system")
+                sys.exit(1)
             else:
                 sys.exit(1)
         elif args.command == "status":

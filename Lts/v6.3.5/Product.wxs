@@ -23,34 +23,18 @@
         <!-- Components -->
         <DirectoryRef Id="INSTALLFOLDER">
             <Component Id="AgentExecutable" Guid="*">
-                <File Id="SentinelExe" Source="sentinel.exe" KeyPath="yes" />
+                <File Id="SentinelExe" Source="obylon.exe" KeyPath="yes" />
                 
-                <!-- Service Registration -->
-                <ServiceInstall
-                    Id="ServiceInstaller"
-                    Type="ownProcess"
-                    Name="ObylonSentinel"
-                    DisplayName="Obylon Sentinel Core"
-                    Description="Enterprise Endpoint Monitoring Service"
-                    Start="auto"
-                    Account="LocalSystem"
-                    ErrorControl="normal"
-                    Interactive="no" />
-                
-                <ServiceControl
-                    Id="StartService"
-                    Start="install"
-                    Stop="both"
-                    Remove="uninstall"
-                    Name="ObylonSentinel"
-                    Wait="yes" />
+                <!-- PATH Registration -->
+                <Environment Id="AddInstallDirToPath" Name="PATH" Value="[INSTALLFOLDER]" Permanent="no" Part="last" Action="set" System="yes" />
             </Component>
         </DirectoryRef>
 
         <DirectoryRef Id="ObylonDataFolder">
             <Component Id="ProgramDataFolder" Guid="*">
                 <CreateFolder>
-                    <Permission User="Everyone" GenericAll="yes"/>
+                    <Permission User="SYSTEM" GenericAll="yes" />
+                    <Permission User="Administrators" GenericAll="yes" />
                 </CreateFolder>
             </Component>
         </DirectoryRef>
@@ -62,29 +46,48 @@
         </Feature>
 
         <!-- Custom Actions for Deployment Modes -->
-        <!-- Note: Execute="deferred" Impersonate="no" ensures NT AUTHORITY\SYSTEM -->
-        
+        <CustomAction Id="Set_Single_Activation" Property="Single_Activation" Value="[LICENSEKEY]" />
         <CustomAction Id="Single_Activation"
                       Directory="INSTALLFOLDER"
-                      ExeCommand="&quot;[INSTALLFOLDER]sentinel.exe&quot; activate [LICENSEKEY]"
+                      ExeCommand="&quot;[INSTALLFOLDER]obylon.exe&quot; activate [CustomActionData]"
+                      Execute="deferred"
+                      Impersonate="no"
+                      Return="ignore" />
+                      
+        <CustomAction Id="Set_Fleet_Seed_Drop" Property="Fleet_Seed_Drop" Value="[LICENSEKEY]" />
+        <CustomAction Id="Fleet_Seed_Drop"
+                      Directory="INSTALLFOLDER"
+                      ExeCommand="cmd.exe /c &quot;echo [CustomActionData] &gt; C:\ProgramData\Obylon\license_seed.txt&quot;"
                       Execute="deferred"
                       Impersonate="no"
                       Return="check" />
                       
-        <CustomAction Id="Fleet_Seed_Drop"
+        <!-- Custom Action for Scheduled Task -->
+        <CustomAction Id="RegisterStartupTask"
                       Directory="INSTALLFOLDER"
-                      ExeCommand="cmd.exe /c &quot;echo [LICENSEKEY] &gt; C:\ProgramData\Obylon\license_seed.txt&quot;"
+                      ExeCommand="schtasks /Create /TN &quot;ObylonAgent&quot; /TR &quot;\&quot;[INSTALLFOLDER]obylon.exe\&quot;&quot; /SC ONSTART /RL HIGHEST /F"
                       Execute="deferred"
                       Impersonate="no"
-                      Return="check" />
+                      Return="ignore" />
 
         <!-- Custom Action Sequencing -->
         <InstallExecuteSequence>
-            <Custom Action="Single_Activation" After="InstallFiles">
+            <Custom Action="Set_Single_Activation" After="InstallFiles">
                 <![CDATA[DEPLOY_MODE="SINGLE" AND NOT Installed]]>
             </Custom>
-            <Custom Action="Fleet_Seed_Drop" After="InstallFiles">
+            <Custom Action="Single_Activation" After="Set_Single_Activation">
+                <![CDATA[DEPLOY_MODE="SINGLE" AND NOT Installed]]>
+            </Custom>
+            
+            <Custom Action="Set_Fleet_Seed_Drop" After="InstallFiles">
                 <![CDATA[DEPLOY_MODE="FLEET" AND NOT Installed]]>
+            </Custom>
+            <Custom Action="Fleet_Seed_Drop" After="Set_Fleet_Seed_Drop">
+                <![CDATA[DEPLOY_MODE="FLEET" AND NOT Installed]]>
+            </Custom>
+            
+            <Custom Action="RegisterStartupTask" After="InstallFiles">
+                <![CDATA[NOT Installed]]>
             </Custom>
         </InstallExecuteSequence>
 
@@ -119,8 +122,7 @@
                     </RadioButtonGroup>
                 </Control>
 
-                <!-- License Key Input (Masked via Password property on control or just hidden prop) -->
-                <!-- We use Password="yes" so characters are masked like a password -->
+                <!-- License Key Input -->
                 <Control Id="KeyLabel" Type="Text" X="20" Y="140" Width="290" Height="15" Text="Enterprise License Key:" />
                 <Control Id="LicenseKeyEdit" Type="Edit" X="20" Y="160" Width="250" Height="15" Property="LICENSEKEY" Password="yes" />
             </Dialog>
