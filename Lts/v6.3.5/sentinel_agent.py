@@ -80,7 +80,7 @@ import urllib.request
 # Activation endpoint — safe to embed (anon key + URL are not secrets, RLS is the gate)
 OBYLON_PROJECT_URL = "https://ozruikfnrmmvhvozgnoo.supabase.co"
 ENROLLMENT_ENDPOINT = f"{OBYLON_PROJECT_URL}/functions/v1"
-OBYLON_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im96cnVpa2Zucm1tdmh2b3pnbm9vIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0OTQ3NDIsImV4cCI6MjA5NDA3MDc0Mn0.tTWJnVrIUJqE1jXDGsFQ0kHVUJhICQl1Q_DUpSZjjVE"
+OBYLON_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im96cnVpa2Zucm1tdmh2b3pnbm9vIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0OTQ3NDIsImV4cCI6MjA5NDA3MDc0Mn0.5x-1W8ksL2Bd5Mt_JF7zmBu3crfHJLWAls3kTKBEWEY"
 
 # Session credentials — populated from DPAPI vault at boot, never hardcoded
 SUPABASE_URL = None
@@ -502,7 +502,7 @@ class ObylonVault:
             req = urllib.request.Request(
                 f"{ENROLLMENT_ENDPOINT}/activate",
                 data=json.dumps(payload).encode("utf-8"),
-                headers={"apikey": OBYLON_ANON_KEY, "Content-Type": "application/json"}
+                headers={"apikey": OBYLON_ANON_KEY, "Authorization": f"Bearer {OBYLON_ANON_KEY}", "Content-Type": "application/json"}
             )
             import ssl, certifi
             context = ssl.create_default_context(cafile=certifi.where())
