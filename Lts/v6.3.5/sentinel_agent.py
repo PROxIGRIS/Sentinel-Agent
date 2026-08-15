@@ -58,6 +58,12 @@ pytesseract.pytesseract.tesseract_cmd = _get_tesseract_path()
 import io
 import json
 import asyncio
+import base64
+try:
+    import nacl.signing
+    import nacl.encoding
+except ImportError:
+    pass
 import websockets
 import platform
 import random
@@ -123,6 +129,31 @@ try:
     import tkinter as tk
 except ImportError:
     sys.exit("Install dependencies: pip install supabase psutil pillow pynput opencv-python pywin32 structlog")
+
+# Cryptographic License Enforcement (Anti-Tamper)
+LICENSE_VERIFY_KEY_B64 = "oQYy7eR/qxZOlKw/v9QNpmrcDWpNKGOx2YM0q++oXaY="
+
+def verify_server_signature(payload: dict, server_sig: str) -> bool:
+    try:
+        if not server_sig: return False
+        if "nacl.signing" not in sys.modules: return True # Graceful degrade if PyNaCl is completely missing, though it's installed
+        verify_key = nacl.signing.VerifyKey(base64.b64decode(LICENSE_VERIFY_KEY_B64))
+        
+        # Reconstruct canonical payload EXACTLY as Edge Function built it
+        # Note: JavaScript JSON.stringify drops spaces, Python json.dumps adds them. Use separators=(',', ':')
+        sign_payload = json.dumps({
+            "license_id": payload.get("license_id"),
+            "node_id": payload.get("node_id"),
+            "hardware_uuid": HARDWARE_UUID,
+            "expires_at": payload.get("expires_at"),
+            "issued_at": payload.get("issued_at")
+        }, separators=(',', ':')).encode("utf-8")
+        
+        verify_key.verify(sign_payload, base64.b64decode(server_sig))
+        return True
+    except Exception as e:
+        logger.error("Cryptographic signature verification failed", component="system", error=str(e))
+        return False
 
 # --- ENTERPRISE LOGGING ---
 def custom_log_renderer(logger, name, event_dict):
@@ -509,6 +540,12 @@ class ObylonVault:
             with urllib.request.urlopen(req, context=context) as response:
                 body = response.read().decode("utf-8")
                 data = json.loads(body)
+                
+                # Cryptographic offline enforcement check
+                if "server_sig" in data and not verify_server_signature(data, data["server_sig"]):
+                    logger.critical("Activation failed: Cryptographic signature mismatch! Server may be compromised.", component="vault")
+                    return "HARD_ERROR"
+
                 self._data = {
                     "SUPABASE_URL": data.get("supabase_url"),
                     "SUPABASE_ANON_KEY": data.get("anon_key"),
@@ -517,9 +554,11 @@ class ObylonVault:
                     "LICENSE_ID": data.get("license_id"),
                     "NODE_ID": data.get("node_id"),
                     "LICENSE_STATUS": "active",
-                    "LAST_HEARTBEAT_OK_AT": datetime.now(timezone.utc).isoformat(),
+                    "LAST_HEARTBEAT_OK_AT": data.get("issued_at", datetime.now(timezone.utc).isoformat()),
+                    "MAX_SEEN_UTC": data.get("issued_at", datetime.now(timezone.utc).isoformat()),
                     "EXPIRES_AT": data.get("expires_at"),
-                    "GRACE_DAYS": data.get("grace_days", 14)
+                    "GRACE_DAYS": data.get("grace_days", 14),
+                    "SERVER_SIG": data.get("server_sig")
                 }
                 self._save()
                 logger.info("🔒 Obylon DPAPI Vault provisioned via license.", component="vault")
@@ -4654,22 +4693,25 @@ def realtime_c2_listener(workstation_id: str) -> None:
 
                     threading.Thread(target=_handle, daemon=True).start()
 
-                await channel.on_postgres_changes(
+                channel.on_postgres_changes(
                     event="INSERT",
                     schema="public",
                     table="admin_actions",
                     callback=_on_insert
-                ).on_broadcast(
+                )
+                channel.on_broadcast(
                     event="admin_action",
                     callback=_on_insert
-                ).subscribe()
+                )
+                await channel.subscribe()
 
                 # Also subscribe to global classroom channel for broadcast commands
                 global_channel = client.channel("classroom:global")
-                await global_channel.on_broadcast(
+                global_channel.on_broadcast(
                     event="admin_action",
                     callback=_on_insert
-                ).subscribe()
+                )
+                await global_channel.subscribe()
 
                 logger.info("Realtime C2 channel subscribed (CDC + Broadcast + Global)", component="realtime", target=workstation_id)
                 backoff = 1  # Reset backoff on successful connection
@@ -4974,11 +5016,26 @@ def license_heartbeat_loop(workstation_id: str):
             context = ssl.create_default_context(cafile=certifi.where())
             with urllib.request.urlopen(req, context=context) as response:
                 data = json.loads(response.read().decode("utf-8"))
+                
+                # Cryptographic offline enforcement check
+                if "server_sig" in data and not verify_server_signature(data, data["server_sig"]):
+                    logger.critical("License heartbeat signature mismatch! Possible MITM or tampering.", component="license")
+                    LICENSE_INVALID_EVENT.set()
+                    return
+
                 status = data.get("status")
-                vault._data["LAST_HEARTBEAT_OK_AT"] = datetime.now(timezone.utc).isoformat()
+                vault._data["LAST_HEARTBEAT_OK_AT"] = data.get("issued_at", datetime.now(timezone.utc).isoformat())
                 vault._data["LICENSE_STATUS"] = status
                 if data.get("expires_at"): vault._data["EXPIRES_AT"] = data.get("expires_at")
                 if data.get("grace_days"): vault._data["GRACE_DAYS"] = data.get("grace_days")
+                
+                # Monotonic Anti-Rollback High-Water Mark
+                current_max = vault._data.get("MAX_SEEN_UTC")
+                issued_at = data.get("issued_at")
+                if issued_at:
+                    if not current_max or issued_at > current_max:
+                        vault._data["MAX_SEEN_UTC"] = issued_at
+
                 vault._save()
                 
                 if status in ("revoked", "suspended", "expired"):
@@ -5251,11 +5308,25 @@ if __name__ == "__main__":
             ctx = ssl.create_default_context(cafile=certifi.where())
             with urllib.request.urlopen(req, context=ctx, timeout=5) as response:
                 data = json.loads(response.read().decode("utf-8"))
+                
+                # Cryptographic offline enforcement check
+                if "server_sig" in data and not verify_server_signature(data, data["server_sig"]):
+                    logger.critical("Boot-time signature mismatch! Possible MITM or tampering.", component="system")
+                    sys.exit(1)
+
                 boot_status = data.get("status")
-                vault._data["LAST_HEARTBEAT_OK_AT"] = datetime.now(timezone.utc).isoformat()
+                vault._data["LAST_HEARTBEAT_OK_AT"] = data.get("issued_at", datetime.now(timezone.utc).isoformat())
                 vault._data["LICENSE_STATUS"] = boot_status
                 if data.get("expires_at"): vault._data["EXPIRES_AT"] = data.get("expires_at")
                 if data.get("grace_days"): vault._data["GRACE_DAYS"] = data.get("grace_days")
+                
+                # Monotonic Anti-Rollback High-Water Mark
+                current_max = vault._data.get("MAX_SEEN_UTC")
+                issued_at = data.get("issued_at")
+                if issued_at:
+                    if not current_max or issued_at > current_max:
+                        vault._data["MAX_SEEN_UTC"] = issued_at
+
                 vault._save()
         except urllib.error.HTTPError as e:
             if e.code in (401, 403):
@@ -5283,6 +5354,17 @@ if __name__ == "__main__":
                 last_ok_dt = datetime.fromisoformat(last_ok)
                 if datetime.now(timezone.utc) - last_ok_dt > timedelta(days=grace):
                     logger.critical(f"Offline tolerance exceeded ({grace} days). Shutting down.", component="system")
+                    sys.exit(1)
+            except Exception:
+                pass
+                
+        # Anti-Clock Rollback Check
+        current_max = vault.get("MAX_SEEN_UTC")
+        if current_max:
+            try:
+                max_dt = datetime.fromisoformat(current_max)
+                if datetime.now(timezone.utc) < max_dt:
+                    logger.critical("Clock rollback detected! Current time is before MAX_SEEN_UTC. Shutting down.", component="system")
                     sys.exit(1)
             except Exception:
                 pass
