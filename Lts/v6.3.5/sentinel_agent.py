@@ -5482,6 +5482,25 @@ if __name__ == "__main__":
             try:
                 if IDENTITY_FILE.exists(): IDENTITY_FILE.unlink()
                 if ALIAS_FILE.exists(): ALIAS_FILE.unlink()
+                
+                # Nuke the actual DPAPI configuration vault
+                vault_path = Path(os.environ.get('PROGRAMDATA', 'C:\\ProgramData')) / "Obylon" / "obylon.enc"
+                if vault_path.exists():
+                    try:
+                        import ctypes
+                        ctypes.windll.kernel32.SetFileAttributesW(str(vault_path), 128)
+                    except Exception: pass
+                    vault_path.unlink()
+                    
+                # Nuke the offline evidence DB
+                vault_db = Path.home() / ".sentinel_vault.db"
+                if vault_db.exists():
+                    try:
+                        import ctypes
+                        ctypes.windll.kernel32.SetFileAttributesW(str(vault_db), 128)
+                    except Exception: pass
+                    vault_db.unlink()
+                
                 print(f"{C_GREEN}✔ Vault cleared successfully. The agent is now deactivated.{C_RESET}")
             except Exception as e:
                 print(f"{C_RED}✖ Error clearing vault: {e}{C_RESET}")
