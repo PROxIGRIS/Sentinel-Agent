@@ -131,7 +131,7 @@ except ImportError:
     sys.exit("Install dependencies: pip install supabase psutil pillow pynput opencv-python pywin32 structlog")
 
 # Cryptographic License Enforcement (Anti-Tamper)
-LICENSE_VERIFY_KEY_B64 = "oQYy7eR/qxZOlKw/v9QNpmrcDWpNKGOx2YM0q++oXaY="
+LICENSE_VERIFY_KEY_B64 = "vPh/fOXVrua5b844GH5c60lNog4xSOhmT1rtrUhFwA8="
 
 def verify_server_signature(payload: dict, server_sig: str) -> bool:
     try:
@@ -152,7 +152,7 @@ def verify_server_signature(payload: dict, server_sig: str) -> bool:
         verify_key.verify(sign_payload, base64.b64decode(server_sig))
         return True
     except Exception as e:
-        logger.error("Cryptographic signature verification failed", component="system", error=str(e))
+        logger.error(f"Signature verify failed: {e}", component="license")
         return False
 
 # --- ENTERPRISE LOGGING ---
@@ -1213,7 +1213,8 @@ def _load_good_vocab() -> list[str]:
                         line = line.strip()
                         if line and not line.startswith("#"):
                             terms.append(line.lower())
-                logger.info("good_vocab loaded", component="lexengine", terms_count=len(terms))
+                # Silent loading for CLI professionalism
+                # logger.debug("good_vocab loaded", component="lexengine", terms_count=len(terms))
                 return terms
             except Exception as e:
                 logger.error("good_vocab load failed", component="lexengine", error=str(e))
@@ -4541,6 +4542,18 @@ def realtime_c2_listener(workstation_id: str) -> None:
                     filter=f"id=eq.{LICENSE_ID}",
                     callback=_on_license_update
                 )
+                
+                def _on_license_broadcast(payload):
+                    status = payload.get("payload", {}).get("status")
+                    if status in ("revoked", "suspended", "expired"):
+                        logger.critical(f"Realtime C2: License revoked via broadcast ({status}). Initiating shutdown.", component="realtime")
+                        LICENSE_INVALID_EVENT.set()
+                        
+                license_channel.on_broadcast(
+                    event="license_update",
+                    callback=_on_license_broadcast
+                )
+                
                 await license_channel.subscribe()
 
                 def _on_insert(payload):
@@ -4994,9 +5007,14 @@ def license_heartbeat_loop(workstation_id: str):
     global ACCESS_TOKEN, REFRESH_TOKEN
     while True:
         try:
-            # Sync token rotation from Supabase client background refresh
+            # Actively refresh token to prevent stale 401s (Round 3 fix)
             if sb:
-                session = sb.auth.get_session()
+                try:
+                    session = sb.auth.refresh_session()
+                except Exception as refresh_err:
+                    logger.debug(f"Session refresh failed: {refresh_err}", component="license")
+                    session = sb.auth.get_session()
+                    
                 if session and session.access_token != ACCESS_TOKEN:
                     ACCESS_TOKEN = session.access_token
                     REFRESH_TOKEN = session.refresh_token
@@ -5042,11 +5060,6 @@ def license_heartbeat_loop(workstation_id: str):
                     logger.critical(f"License is {status}, shutting down.", component="license")
                     LICENSE_INVALID_EVENT.set()
                     return
-        except urllib.error.HTTPError as e:
-            if e.code in (401, 403):
-                logger.critical(f"License heartbeat rejected: {e.code}", component="license")
-                LICENSE_INVALID_EVENT.set()
-                return
         except Exception as e:
             logger.error(f"License heartbeat error: {e}", component="license")
             # Offline tolerance based on saved bounds
@@ -5232,42 +5245,318 @@ def main() -> None:
             pass
 
 
-if __name__ == "__main__":
+
+def cmd_diagnose(dev_mode=False):
+    import ssl, certifi, urllib.request, json
+    
+    C_BLUE = "\033[1;34m"
+    C_GREEN = "\033[92m"
+    C_RED = "\033[91m"
+    C_YELLOW = "\033[93m"
+    C_CYAN = "\033[96m"
+    C_RESET = "\033[0m"
+    C_DIM = "\033[90m"
+    
+    print(f"\n{C_BLUE}======================================================{C_RESET}")
+    print(f"{C_BLUE}      OBYLON SENTINEL - DIAGNOSTIC SUITE              {C_RESET}")
+    print(f"{C_BLUE}======================================================{C_RESET}\n")
+    
+    vault.load()
+    access_token = vault.get('ACCESS_TOKEN')
+    
+    print(f"{C_CYAN}▶ VAULT CHECK{C_RESET}")
+    if not access_token:
+        print(f"  {C_RED}✖ Error:{C_RESET} No ACCESS_TOKEN found in local vault.")
+        print(f"  {C_YELLOW}Resolution:{C_RESET} This workstation is not activated. Run `obylon activate <LICENSE_KEY>`")
+        sys.exit(1)
+    print(f"  {C_GREEN}✔ Access Token Found{C_RESET}")
+        
+    print(f"\n{C_CYAN}▶ NETWORK & REACHABILITY{C_RESET}")
+    print(f"  {C_DIM}Target: {ENROLLMENT_ENDPOINT}/license_heartbeat{C_RESET}")
+    
+    req = urllib.request.Request(
+        f"{ENROLLMENT_ENDPOINT}/license_heartbeat",
+        data=json.dumps({"hardware_uuid": HARDWARE_UUID}).encode("utf-8"),
+        headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+    )
+    ctx = ssl.create_default_context(cafile=certifi.where())
+    
     try:
-        parser = argparse.ArgumentParser(description="Obylon Endpoint Agent")
-        subparsers = parser.add_subparsers(dest="command")
+        with urllib.request.urlopen(req, context=ctx, timeout=5) as response:
+            status_code = response.getcode()
+            print(f"  {C_GREEN}✔ HTTP {status_code} OK{C_RESET}")
+            
+            data = json.loads(response.read().decode("utf-8"))
+            
+            print(f"\n{C_CYAN}▶ CRYPTOGRAPHIC VERIFICATION{C_RESET}")
+            if "server_sig" in data:
+                if not verify_server_signature(data, data["server_sig"]):
+                    print(f"  {C_RED}✖ Signature verification failed{C_RESET}")
+                    print(f"\n  {C_YELLOW}What does this mean?{C_RESET}")
+                    print(f"  The server's response could not be cryptographically verified.")
+                    print(f"  This usually indicates a payload mismatch or an ongoing key rotation issue,")
+                    print(f"  NOT a revoked license. Please contact Obylon Support with this output.")
+                    if dev_mode:
+                        print(f"\n{C_DIM}[DEV] Payload: {json.dumps(data)}{C_RESET}")
+                    sys.exit(1)
+                else:
+                    print(f"  {C_GREEN}✔ Payload signature verified{C_RESET}")
+            else:
+                print(f"  {C_YELLOW}⚠ No server signature returned in payload{C_RESET}")
+            
+            print(f"\n{C_CYAN}▶ LICENSE STATUS{C_RESET}")
+            status = data.get('status')
+            if status == 'active':
+                print(f"  {C_GREEN}✔ ACTIVE{C_RESET} (Expires: {data.get('expires_at')})")
+            else:
+                print(f"  {C_RED}✖ {str(status).upper()}{C_RESET}")
+                
+            print(f"\n{C_GREEN}Diagnostic complete. System operational.{C_RESET}\n")
+            sys.exit(0)
+            
+    except urllib.error.HTTPError as e:
+        print(f"  {C_RED}✖ HTTP {e.code} ({e.reason}){C_RESET}")
+        
+        print(f"\n{C_CYAN}▶ ROOT CAUSE ANALYSIS{C_RESET}")
+        if e.code in (401, 403):
+            print(f"  {C_RED}Authentication Rejected{C_RESET}")
+            print(f"  This does {C_YELLOW}not{C_RESET} necessarily mean the license was revoked.")
+            print(f"  It means the JWT access token used in the request could not be verified by the Edge Function.")
+            print(f"  If the agent is actively running, it will gracefully fall back to the offline tolerance grace period.")
+            print(f"  If this persists across 15+ minutes (token rotation window), contact Obylon Support.")
+        elif e.code == 404:
+            print(f"  {C_RED}Endpoint or License Not Found{C_RESET}")
+            print(f"  The remote database no longer holds a record for this license node.")
+        else:
+            print(f"  Unexpected server error.")
+            
+        if dev_mode:
+            try:
+                body = e.read().decode('utf-8')
+                print(f"\n{C_DIM}[DEV] Response Body:\n{body}{C_RESET}")
+            except:
+                pass
+                
+        sys.exit(1)
+        
+    except Exception as e:
+        print(f"  {C_RED}✖ Connection Error: {e}{C_RESET}")
+        print(f"\n{C_CYAN}▶ ROOT CAUSE ANALYSIS{C_RESET}")
+        print(f"  The agent could not reach the internet or the Obylon cloud is unreachable.")
+        print(f"  Check local firewall policies for traffic to: {ENROLLMENT_ENDPOINT}")
+        if dev_mode:
+            import traceback
+            print(f"\n{C_DIM}[DEV] Traceback:\n{traceback.format_exc()}{C_RESET}")
+        sys.exit(1)
+
+def cmd_support_bundle():
+    import json
+    import platform
+    from datetime import datetime, timezone
+    
+    C_GREEN = "\033[92m"
+    C_RESET = "\033[0m"
+    
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    filename = f"obylon-support-{timestamp}.txt"
+    
+    vault.load()
+    
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(f"--- OBYLON SUPPORT BUNDLE ---\n")
+        f.write(f"Timestamp: {datetime.now(timezone.utc).isoformat()}\n")
+        f.write(f"Version: {BuildInfo.VERSION}\n")
+        f.write(f"OS: {platform.system()} {platform.release()} {platform.version()}\n")
+        f.write(f"Hardware UUID: {HARDWARE_UUID}\n")
+        f.write(f"Hardware Fingerprint: {HARDWARE_FINGERPRINT}\n")
+        f.write(f"\n--- VAULT STATUS ---\n")
+        f.write(f"License ID: {vault.get('LICENSE_ID')}\n")
+        f.write(f"Node ID: {vault.get('NODE_ID')}\n")
+        f.write(f"License Status: {vault.get('LICENSE_STATUS')}\n")
+        f.write(f"Last Heartbeat OK: {vault.get('LAST_HEARTBEAT_OK_AT')}\n")
+        f.write(f"Grace Days: {vault.get('GRACE_DAYS')}\n")
+        
+        f.write(f"\n--- LOG EXTRACT ---\n")
+        log_file = Path("C:\\ProgramData\\Obylon\\agent.log")
+        if log_file.exists():
+            try:
+                with open(log_file, "r", encoding="utf-8") as lf:
+                    lines = lf.readlines()
+                    f.write("".join(lines[-100:]))
+            except Exception as e:
+                f.write(f"Could not read log file: {e}\n")
+        else:
+            f.write("Log file not found.\n")
+            
+    print(f"{C_GREEN}✔ Support bundle successfully written to {filename}{C_RESET}")
+    print("Please attach this file when contacting Obylon Support.")
+    sys.exit(0)
+
+class CustomHelpFormatter(argparse.HelpFormatter):
+    def _format_action_invocation(self, action):
+        if not action.option_strings or action.nargs == 0:
+            return super()._format_action_invocation(action)
+        return ', '.join(action.option_strings)
+        
+    def _format_usage(self, usage, actions, groups, prefix):
+        return "\033[1;34mUsage:\033[0m sentinel_agent.py <command> [options]\n"
+
+if __name__ == "__main__":
+    import argparse
+    import time
+    from datetime import datetime, timezone, timedelta
+    
+    C_BLUE = "\033[1;34m"
+    C_GREEN = "\033[92m"
+    C_RED = "\033[91m"
+    C_YELLOW = "\033[93m"
+    C_CYAN = "\033[96m"
+    C_RESET = "\033[0m"
+    C_DIM = "\033[90m"
+    
+    try:
+        parser = argparse.ArgumentParser(
+            description=f"{C_BLUE}Obylon Sentinel Endpoint Agent - Management CLI{C_RESET}\nTo run the agent normally, launch without any arguments.",
+            epilog=f"{C_CYAN}Examples:{C_RESET}\n  sentinel_agent.py activate OBY-XXXX-XXXX\n  sentinel_agent.py diagnose --dev\n  sentinel_agent.py support-bundle",
+            formatter_class=CustomHelpFormatter
+        )
+        
+        # Global Options
+        parser.add_argument("--verbose", "--debug", action="store_true", help="Enable verbose debug logging for the agent")
+        parser.add_argument("--dev", action="store_true", help="Enable developer mode (stack traces, full API payloads)")
+        parser.add_argument("-v", "--version", action="store_true", help="Print version information")
+        
+        subparsers = parser.add_subparsers(dest="command", help="Available Commands", metavar="")
         
         activate_parser = subparsers.add_parser("activate", help="Activate agent with a license key")
         activate_parser.add_argument("LICENSE_KEY", help="The license key to activate")
         
-        status_parser = subparsers.add_parser("status", help="Print license status")
+        status_parser = subparsers.add_parser("status", help="Print human-readable license status")
+        diagnose_parser = subparsers.add_parser("diagnose", help="Run diagnostic checks on connectivity and authentication")
         
-        args = parser.parse_args()
-        BuildInfo.print_banner()
+        deactivate_parser = subparsers.add_parser("deactivate", help="Wipe local vault and deactivate agent")
+        deactivate_parser.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
+        
+        version_parser = subparsers.add_parser("version", help="Print version information")
+        
+        support_parser = subparsers.add_parser("support-bundle", help="Generate a support bundle for troubleshooting")
+        
+        # Check if they only provided --help, let argparse handle it
+        args, unknown = parser.parse_known_args()
+        
+        if unknown:
+            parser.print_help()
+            print(f"\n{C_RED}sentinel_agent.py: error: unrecognized arguments: {' '.join(unknown)}{C_RESET}")
+            sys.exit(1)
+        
+        # If they provided a command, it's a CLI action (don't boot the agent, silence normal logs)
+        is_cli_command = args.command is not None or args.version
+        
+        # If they passed --dev or --verbose BUT NO COMMAND, they want to boot the agent with those flags!
+        # But if they passed an invalid command, argparse would have errored.
+        # So if args.command is None, we boot the agent.
+        
+        if is_cli_command:
+            import logging
+            logging.getLogger().setLevel(logging.CRITICAL)
+            
+        if args.verbose or args.dev:
+            import logging
+            logging.getLogger().setLevel(logging.DEBUG)
+
+        if args.command == "version" or args.version:
+            print(f"Obylon Sentinel Agent v{BuildInfo.VERSION}")
+            sys.exit(0)
+            
+        if args.command == "diagnose":
+            cmd_diagnose(dev_mode=args.dev)
+            
+        if args.command == "support-bundle":
+            cmd_support_bundle()
+            
+        if args.command == "deactivate":
+            if not args.yes:
+                ans = input(f"{C_YELLOW}⚠ This will wipe the local vault. Are you sure? [y/N] {C_RESET}")
+                if ans.lower() != 'y':
+                    sys.exit(0)
+            try:
+                if IDENTITY_FILE.exists(): IDENTITY_FILE.unlink()
+                if ALIAS_FILE.exists(): ALIAS_FILE.unlink()
+                print(f"{C_GREEN}✔ Vault cleared successfully. The agent is now deactivated.{C_RESET}")
+            except Exception as e:
+                print(f"{C_RED}✖ Error clearing vault: {e}{C_RESET}")
+                if args.dev:
+                    import traceback
+                    print(traceback.format_exc())
+            sys.exit(0)
+            
+        if args.command == "status":
+            if not vault.load() or not vault.get('ACCESS_TOKEN'):
+                print(f"{C_YELLOW}This workstation has not been activated. Run: `obylon activate <LICENSE_KEY>`{C_RESET}")
+                sys.exit(0)
+                
+            status = vault.get('LICENSE_STATUS')
+            expires_str = vault.get('EXPIRES_AT')
+            last_hb_str = vault.get('LAST_HEARTBEAT_OK_AT')
+            grace = vault.get('GRACE_DAYS')
+            
+            print(f"\n{C_BLUE}--- OBYLON SENTINEL STATUS ---{C_RESET}\n")
+            if status == 'active':
+                print(f"Status: {C_GREEN}{str(status).upper()}{C_RESET}")
+            else:
+                print(f"Status: {C_RED}{str(status).upper()}{C_RESET}")
+                
+            if expires_str:
+                try:
+                    exp_dt = datetime.fromisoformat(expires_str)
+                    days = (exp_dt - datetime.now(timezone.utc)).days
+                    if days > 0:
+                        print(f"Expiration: {expires_str[:10]} ({days} days remaining)")
+                    else:
+                        print(f"Expiration: {C_RED}Expired {abs(days)} days ago{C_RESET}")
+                except: pass
+            if last_hb_str:
+                print(f"Last Heartbeat: {last_hb_str[:16].replace('T', ' ')} UTC")
+            if grace:
+                print(f"Offline Grace: {grace} days")
+                
+            print(f"\nNode ID: {C_DIM}{vault.get('NODE_ID')}{C_RESET}")
+            print(f"Agent Version: v{BuildInfo.VERSION}\n")
+            sys.exit(0)
+
+        # ---------------------------------------------------------
+        # Standard Boot / Activation Path (Requires logs)
+        # ---------------------------------------------------------
+        if not is_cli_command:
+            BuildInfo.print_banner()
+            
         harden_installation()
 
-        # 1. The Provisioning Path (IT Admin Command Line)
         if args.command == "activate":
             import platform
             hostname = platform.node()
+            print(f"{C_CYAN}▶ Provisioning Agent...{C_RESET}")
             status = vault.provision_via_license(args.LICENSE_KEY, hostname, HARDWARE_UUID, HARDWARE_FINGERPRINT)
             if status == "SUCCESS":
-                logger.info("Activation complete. Agent ready for background execution.", component="system")
+                print(f"{C_GREEN}✔ Activation complete. Agent ready for background execution.{C_RESET}")
                 sys.exit(0)
             elif status == "NETWORK_ERROR":
-                logger.error("Activation failed: network unreachable. Check connectivity and retry.", component="system")
+                print(f"{C_RED}✖ Activation failed:{C_RESET} Network unreachable. Check connectivity and retry.")
+                sys.exit(1)
+            elif status == "NODE_LIMIT_REACHED":
+                print(f"{C_RED}✖ Activation failed:{C_RESET} License node limit reached.")
+                sys.exit(1)
+            elif status == "EXPIRED":
+                print(f"{C_RED}✖ Activation failed:{C_RESET} License is expired.")
+                sys.exit(1)
+            elif status == "INVALID_KEY":
+                print(f"{C_RED}✖ Activation failed:{C_RESET} Invalid license key.")
                 sys.exit(1)
             else:
+                print(f"{C_RED}✖ Activation failed:{C_RESET} {status}")
                 sys.exit(1)
-        elif args.command == "status":
-            vault.load()
-            print(f"License ID: {vault.get('LICENSE_ID')}")
-            print(f"Node ID: {vault.get('NODE_ID')}")
-            print(f"Status: {vault.get('LICENSE_STATUS')}")
-            print(f"Last Heartbeat: {vault.get('LAST_HEARTBEAT_OK_AT')}")
-            sys.exit(0)
 
-        # 2. The Standard Boot Path
+        # 2. The Standard Boot Path (No Command)
         if not vault.load() or not vault.get("ACCESS_TOKEN"):
             seed_file = Path(os.environ.get('PROGRAMDATA', 'C:\\ProgramData')) / "Obylon" / "license_seed.txt"
             if seed_file.exists():
@@ -5287,7 +5576,7 @@ if __name__ == "__main__":
                             logger.warning("Network unreachable during seed ignition. Retrying in 60s...", component="system")
                             time.sleep(60)
                         else:
-                            logger.critical("Hard error during seed ignition. Shutting down.", component="system")
+                            logger.critical(f"Hard error during seed ignition: {status}. Shutting down.", component="system")
                             sys.exit(1)
                 except Exception as e:
                     logger.critical(f"Seed file read error: {e}", component="system")
@@ -5295,8 +5584,31 @@ if __name__ == "__main__":
             else:
                 logger.critical("Vault incomplete or missing session. Run: obylon activate <LICENSE_KEY>", component="system")
                 sys.exit(1)
+                
+        SUPABASE_URL = vault.get("SUPABASE_URL")
+        SUPABASE_KEY = vault.get("SUPABASE_ANON_KEY")
+        
+        # 3. Ignite the Supabase Engine FIRST to refresh tokens
+        try:
+            if not SUPABASE_URL or not SUPABASE_KEY:
+                raise ValueError("Credentials missing")
+            sb = _build_supabase_client()
+            
+            # Actively refresh token at boot to prevent stale 401s!
+            try:
+                session = sb.auth.refresh_session()
+            except Exception:
+                session = sb.auth.get_session()
+                
+            if session and session.access_token != vault.get("ACCESS_TOKEN"):
+                vault._data["ACCESS_TOKEN"] = session.access_token
+                vault._data["REFRESH_TOKEN"] = session.refresh_token
+                vault._save()
+        except Exception as e:
+            logger.warning(f"Supabase offline mode. linkage failed: {e}", component="boot")
+            sb = None
 
-        # Immediate boot-time license check (Try Online First)
+        # Immediate boot-time license check (Try Online First with FRESH token)
         try:
             import ssl, certifi, urllib.request, json
             payload = {"hardware_uuid": HARDWARE_UUID}
@@ -5329,10 +5641,8 @@ if __name__ == "__main__":
 
                 vault._save()
         except urllib.error.HTTPError as e:
-            if e.code in (401, 403):
-                boot_status = "revoked"
-                vault._data["LICENSE_STATUS"] = boot_status
-                vault._save()
+            logger.error(f"Boot-time license check failed (HTTP {e.code}). Falling back to offline mode.", component="system")
+            boot_status = vault.get("LICENSE_STATUS")
         except Exception:
             boot_status = vault.get("LICENSE_STATUS") # Offline fallback
 
@@ -5369,8 +5679,6 @@ if __name__ == "__main__":
             except Exception:
                 pass
 
-        SUPABASE_URL = vault.get("SUPABASE_URL")
-        SUPABASE_KEY = vault.get("SUPABASE_ANON_KEY")
         ACCESS_TOKEN = vault.get("ACCESS_TOKEN")
         REFRESH_TOKEN = vault.get("REFRESH_TOKEN")
         LICENSE_ID = vault.get("LICENSE_ID")
@@ -5416,28 +5724,16 @@ if __name__ == "__main__":
             
         time.sleep(0.5) # Give the hooks a fraction of a second to attach
 
-        # 3. Ignite the Engine
-        try:
-            if not SUPABASE_URL or not SUPABASE_KEY:
-                raise ValueError("Credentials missing")
-            sb = _build_supabase_client()
-        except Exception as e:
-            logger.warning(f"Supabase offline mode. linkage failed: {e}", component="boot")
-            sb = None
-
         # Launch the Agent
         main()
 
     except KeyboardInterrupt:
         print("\n[*] Agent terminated by user.")
     except Exception as e:
-        # IMMORTAL CATCH — if ANYTHING in the entire boot sequence crashes,
-        # print a human-readable error and keep the window open for the demo operator.
+        # IMMORTAL CATCH
         print(f"\n\033[91m[FATAL ERROR]\033[0m {e}")
         import traceback
         traceback.print_exc()
-        # See main()'s fatal handler: only prompt when stdin is an actual
-        # interactive terminal, never when running headless/as a service.
         try:
             if sys.stdin is not None and sys.stdin.isatty():
                 input("\nPress Enter to exit...")
