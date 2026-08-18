@@ -18,3 +18,7 @@ diagnose_*.py
 *.spec
 build/
 dist/
+Lts/v6.3.5/garbage/
+Lts/v6.3.5/Setup-Release/
+wix/
+wix.zip

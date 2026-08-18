@@ -1,0 +1,28 @@
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(6, 3, 5, 0),
+    prodvers=(6, 3, 5, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+    ),
+  kids=[
+    StringFileInfo(
+      [
+      StringTable(
+        '040904B0',
+        [StringStruct('CompanyName', 'Umbraxis'),
+        StringStruct('FileDescription', 'Obylon Sentinel Agent'),
+        StringStruct('FileVersion', '6.3.5.0'),
+        StringStruct('InternalName', 'obylon.exe'),
+        StringStruct('LegalCopyright', 'Copyright (c) 2026 Umbraxis. All rights reserved.'),
+        StringStruct('OriginalFilename', 'obylon.exe'),
+        StringStruct('ProductName', 'Obylon Sentinel'),
+        StringStruct('ProductVersion', '6.3.5.0')])
+      ]), 
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)

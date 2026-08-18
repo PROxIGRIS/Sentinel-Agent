@@ -568,30 +568,33 @@ class ObylonVault:
             try:
                 err_data = json.loads(body)
                 err_type = err_data.get("error", "unknown")
-                err_msg = ""
                 if err_type == "node_limit_reached":
-                    err_msg = f"Activation failed: Node limit reached ({err_data.get('active_nodes')}/{err_data.get('node_limit')}). Contact {err_data.get('support_contact')}."
-                elif err_type in ("license_expired", "license_revoked", "license_suspended", "invalid_key"):
-                    err_msg = f"Activation failed: {err_type.replace('_', ' ').capitalize()}."
+                    masked_key = f"{license_key[:4]}****-****-{license_key[-4:]}" if len(license_key) > 8 else license_key
+                    logger.error(
+                        f"Activation REJECTED — Seat capacity exhausted. "
+                        f"Key: {masked_key}, "
+                        f"Active: {err_data.get('active_nodes')}/{err_data.get('node_limit')}",
+                        component="vault"
+                    )
+                    return "NODE_LIMIT_REACHED"
+                elif err_type in ("license_expired", "license_revoked", "license_suspended"):
+                    logger.error(f"Activation failed: {err_type.replace('_', ' ').capitalize()}", component="vault")
+                    return "EXPIRED"
+                elif err_type == "invalid_key":
+                    logger.error("Activation failed: Invalid license key.", component="vault")
+                    return "INVALID_KEY"
                 else:
-                    err_msg = f"Activation failed: {err_type}"
-                
-                print(err_msg)
-                import tkinter as tk
-                from tkinter import messagebox
-                root = tk.Tk()
-                root.withdraw()
-                root.attributes('-topmost', True)
-                messagebox.showerror("Obylon Sentinel - Activation Failed", err_msg)
+                    logger.error(f"Activation failed: {err_type} — {err_data.get('message', body)}", component="vault")
+                    return f"Activation failed: {err_type}"
             except Exception:
-                print(f"Activation failed: HTTP {e.code}")
-            return "HARD_ERROR"
+                logger.error(f"Activation failed: HTTP {e.code} — {body[:200]}", component="vault")
+                return f"Activation failed: HTTP {e.code}"
         except urllib.error.URLError as e:
-            print(f"Activation network error: {e}")
+            logger.error(f"Activation network error: {e}", component="vault")
             return "NETWORK_ERROR"
         except Exception as e:
-            print(f"Activation error: {e}")
-            return "HARD_ERROR"
+            logger.error(f"Activation error: {e}", component="vault")
+            return f"Activation failed: {e}"
 
     def get(self, key: str) -> str:
         return self._data.get(key, "")
@@ -2483,6 +2486,8 @@ def register_workstation() -> str:
             if wid:
                 sb.table("workstations").update(payload).eq("id", wid).execute()
             else:
+                import uuid
+                payload["id"] = str(uuid.uuid4())
                 res_new = sb.table("workstations").insert(payload).execute()
                 wid = res_new.data[0]["id"]
 
@@ -5243,6 +5248,115 @@ def main() -> None:
                 input("\nPress Enter to exit...")
         except Exception:
             pass
+def cmd_host():
+    import time
+    import subprocess
+    import win32ts
+    import win32security
+    import win32process
+    import win32profile
+    import win32con
+    import win32api
+    
+    SE_TCB_NAME = "SeTcbPrivilege"
+
+    def _enable_tcb_privilege():
+        flags = win32security.TOKEN_ADJUST_PRIVILEGES | win32security.TOKEN_QUERY
+        htoken = win32security.OpenProcessToken(win32api.GetCurrentProcess(), flags)
+        priv_id = win32security.LookupPrivilegeValue(None, SE_TCB_NAME)
+        win32security.AdjustTokenPrivileges(htoken, False, [(priv_id, win32security.SE_PRIVILEGE_ENABLED)])
+        win32api.CloseHandle(htoken)
+
+    def launch_in_active_session(exe_path: str):
+        session_id = win32ts.WTSGetActiveConsoleSessionId()
+        if session_id in (0xFFFFFFFF, None):
+            return None, session_id
+
+        _enable_tcb_privilege()
+        
+        try:
+            user_token = win32ts.WTSQueryUserToken(session_id)
+        except Exception:
+            return None, session_id
+
+        try:
+            primary_token = win32security.DuplicateTokenEx(
+                user_token,
+                win32security.SecurityIdentification,
+                win32con.MAXIMUM_ALLOWED,
+                win32security.TokenPrimary,
+                win32security.SECURITY_ATTRIBUTES(),
+            )
+            env = win32profile.CreateEnvironmentBlock(user_token, False)
+
+            startup = win32process.STARTUPINFO()
+            startup.lpDesktop = "winsta0\\default"
+
+            proc_info = win32process.CreateProcessAsUser(
+                primary_token,
+                exe_path,
+                None,
+                None,
+                None,
+                False,
+                win32con.CREATE_UNICODE_ENVIRONMENT | win32process.CREATE_NEW_CONSOLE,
+                env,
+                None,
+                startup,
+            )
+            win32api.CloseHandle(primary_token)
+            return proc_info, session_id
+        finally:
+            win32api.CloseHandle(user_token)
+
+    exe_path = sys.executable if not getattr(sys, 'frozen', False) else sys.argv[0]
+    if not getattr(sys, 'frozen', False):
+        exe_path = f'"{exe_path}" "{os.path.abspath(__file__)}"'
+    else:
+        exe_path = f'"{exe_path}"'
+
+    active_child_proc_info = None
+    current_session = None
+
+    while True:
+        try:
+            # Poll session state. 
+            # (Polling is acceptable for this prototype script, as WTSRegisterSessionNotification requires an active msg pump window)
+            session_id = win32ts.WTSGetActiveConsoleSessionId()
+            
+            # If session changed (e.g. logoff -> logon of different user, or lock/unlock fast user switch)
+            if session_id != current_session and session_id not in (0xFFFFFFFF, None):
+                if active_child_proc_info:
+                    try:
+                        win32process.TerminateProcess(active_child_proc_info[0], 0)
+                        win32api.CloseHandle(active_child_proc_info[0])
+                        win32api.CloseHandle(active_child_proc_info[1])
+                    except Exception:
+                        pass
+                    active_child_proc_info = None
+                
+                # Launch new child in new session
+                res = launch_in_active_session(exe_path)
+                if res[0]:
+                    active_child_proc_info = res[0]
+                    current_session = res[1]
+
+            # If child crashed or exited, restart it (with basic backoff via the 5s loop)
+            if active_child_proc_info:
+                exit_code = win32process.GetExitCodeProcess(active_child_proc_info[0])
+                if exit_code != win32con.STILL_ACTIVE:
+                    win32api.CloseHandle(active_child_proc_info[0])
+                    win32api.CloseHandle(active_child_proc_info[1])
+                    active_child_proc_info = None
+                    # Attempt to re-launch
+                    res = launch_in_active_session(exe_path)
+                    if res[0]:
+                        active_child_proc_info = res[0]
+                        current_session = res[1]
+
+            time.sleep(5)
+        except Exception:
+            time.sleep(5)
 
 
 
@@ -5417,7 +5531,7 @@ if __name__ == "__main__":
     try:
         parser = argparse.ArgumentParser(
             description=f"{C_BLUE}Obylon Sentinel Endpoint Agent - Management CLI{C_RESET}\nTo run the agent normally, launch without any arguments.",
-            epilog=f"{C_CYAN}Examples:{C_RESET}\n  sentinel_agent.py activate OBY-XXXX-XXXX\n  sentinel_agent.py diagnose --dev\n  sentinel_agent.py support-bundle",
+            epilog=f"{C_CYAN}Examples:{C_RESET}\n  obylon activate OBY-XXXX-XXXX\n  obylon diagnose --dev\n  obylon support-bundle",
             formatter_class=CustomHelpFormatter
         )
         
@@ -5430,31 +5544,41 @@ if __name__ == "__main__":
         
         activate_parser = subparsers.add_parser("activate", help="Activate agent with a license key")
         activate_parser.add_argument("LICENSE_KEY", help="The license key to activate")
+        activate_parser.add_argument("--dev", action="store_true", help=argparse.SUPPRESS)
+        activate_parser.add_argument("--verbose", "--debug", action="store_true", help=argparse.SUPPRESS)
         
         status_parser = subparsers.add_parser("status", help="Print human-readable license status")
+        status_parser.add_argument("--dev", action="store_true", help=argparse.SUPPRESS)
+        status_parser.add_argument("--verbose", "--debug", action="store_true", help=argparse.SUPPRESS)
         diagnose_parser = subparsers.add_parser("diagnose", help="Run diagnostic checks on connectivity and authentication")
+        diagnose_parser.add_argument("--dev", action="store_true", help=argparse.SUPPRESS)
+        diagnose_parser.add_argument("--verbose", "--debug", action="store_true", help=argparse.SUPPRESS)
         
         deactivate_parser = subparsers.add_parser("deactivate", help="Wipe local vault and deactivate agent")
         deactivate_parser.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
+        deactivate_parser.add_argument("--dev", action="store_true", help=argparse.SUPPRESS)
+        deactivate_parser.add_argument("--verbose", "--debug", action="store_true", help=argparse.SUPPRESS)
+        
+        host_parser = subparsers.add_parser("host", help="Run the session supervisor (used by Scheduled Task)")
+        host_parser.add_argument("--dev", action="store_true", help=argparse.SUPPRESS)
+        host_parser.add_argument("--verbose", "--debug", action="store_true", help=argparse.SUPPRESS)
         
         version_parser = subparsers.add_parser("version", help="Print version information")
         
         support_parser = subparsers.add_parser("support-bundle", help="Generate a support bundle for troubleshooting")
+        support_parser.add_argument("--dev", action="store_true", help=argparse.SUPPRESS)
+        support_parser.add_argument("--verbose", "--debug", action="store_true", help=argparse.SUPPRESS)
         
         # Check if they only provided --help, let argparse handle it
         args, unknown = parser.parse_known_args()
         
         if unknown:
             parser.print_help()
-            print(f"\n{C_RED}sentinel_agent.py: error: unrecognized arguments: {' '.join(unknown)}{C_RESET}")
+            print(f"\n{C_RED}obylon: error: unrecognized arguments: {' '.join(unknown)}{C_RESET}")
             sys.exit(1)
         
         # If they provided a command, it's a CLI action (don't boot the agent, silence normal logs)
         is_cli_command = args.command is not None or args.version
-        
-        # If they passed --dev or --verbose BUT NO COMMAND, they want to boot the agent with those flags!
-        # But if they passed an invalid command, argparse would have errored.
-        # So if args.command is None, we boot the agent.
         
         if is_cli_command:
             import logging
@@ -5470,6 +5594,10 @@ if __name__ == "__main__":
             
         if args.command == "diagnose":
             cmd_diagnose(dev_mode=args.dev)
+            
+        if args.command == "host":
+            cmd_host()
+            sys.exit(0)
             
         if args.command == "support-bundle":
             cmd_support_bundle()
@@ -5666,15 +5794,52 @@ if __name__ == "__main__":
             boot_status = vault.get("LICENSE_STATUS") # Offline fallback
 
         if boot_status in ("revoked", "suspended", "expired"):
-            logger.critical(f"License is currently {boot_status}. Shutting down.", component="system")
-            # Show popup before exiting
-            import tkinter as tk
-            from tkinter import messagebox
-            root = tk.Tk()
-            root.withdraw()
-            root.attributes('-topmost', True)
-            messagebox.showerror("Obylon Sentinel - License Error", f"This workstation's license is {boot_status}. Please contact your IT administrator to restore access.")
-            sys.exit(1)
+            logger.critical(f"License is currently {boot_status}. Entering Hostile Watermark state.", component="system")
+            def _hostile_watermark_thread(status):
+                import tkinter as tk
+                import ctypes
+                root = tk.Tk()
+                root.overrideredirect(True)
+                root.attributes('-topmost', True)
+                root.attributes('-alpha', 0.5)
+                root.config(bg='black')
+                
+                try:
+                    root.wm_attributes("-transparentcolor", "black")
+                except Exception:
+                    pass
+
+                label = tk.Label(root, text=f"OBYLON SENTINEL // LICENSE {status.upper()} — SYSTEM UNMONITORED", 
+                                 font=("Consolas", 14, "bold"), fg="white", bg="black")
+                label.pack(padx=20, pady=10)
+                
+                root.update_idletasks()
+                win_w = root.winfo_width()
+                win_h = root.winfo_height()
+                screen_w = root.winfo_screenwidth()
+                screen_h = root.winfo_screenheight()
+                
+                root.geometry(f"+{screen_w - win_w - 20}+{screen_h - win_h - 60}")
+                
+                try:
+                    hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+                    GWL_EXSTYLE = -20
+                    WS_EX_LAYERED = 0x00080000
+                    WS_EX_TRANSPARENT = 0x00000020
+                    style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+                    ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED | WS_EX_TRANSPARENT)
+                except Exception as e:
+                    logger.error(f"Failed to set click-through: {e}", component="system")
+
+                def disable_event():
+                    pass
+                root.protocol("WM_DELETE_WINDOW", disable_event)
+                
+                # Block the main thread forever so the agent doesn't start monitoring,
+                # turning this process into a zombie watermark.
+                root.mainloop()
+
+            _hostile_watermark_thread(boot_status)
             
         last_ok = vault.get("LAST_HEARTBEAT_OK_AT")
         grace = int(vault.get("GRACE_DAYS") or 14)
