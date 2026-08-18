@@ -182,16 +182,11 @@ def custom_log_renderer(logger, name, event_dict):
 def setup_structlog():
     # Fix for pythonw / console=False where sys.stdout is None causing structlog/print to crash
     import sys
+    import os
     if sys.stdout is None:
-        class DummyStream:
-            def write(self, x): pass
-            def flush(self): pass
-        sys.stdout = DummyStream()
+        sys.stdout = open(os.devnull, "w")
     if sys.stderr is None:
-        class DummyStream:
-            def write(self, x): pass
-            def flush(self): pass
-        sys.stderr = DummyStream()
+        sys.stderr = open(os.devnull, "w")
         
     # Setup structlog for console + file — fallback to script dir if ProgramData is locked
     try:
