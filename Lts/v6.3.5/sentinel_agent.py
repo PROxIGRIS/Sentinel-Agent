@@ -5303,20 +5303,27 @@ def cmd_host():
 
         _enable_tcb_privilege()
         
+        current_token = None
+        primary_token = None
+        user_token = None
+        
         try:
-            user_token = win32ts.WTSQueryUserToken(session_id)
-        except Exception:
-            return None, session_id
-
-        try:
+            current_token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.MAXIMUM_ALLOWED)
             primary_token = win32security.DuplicateTokenEx(
-                user_token,
+                current_token,
                 win32security.SecurityIdentification,
                 win32con.MAXIMUM_ALLOWED,
                 win32security.TokenPrimary,
                 win32security.SECURITY_ATTRIBUTES(),
             )
-            env = win32profile.CreateEnvironmentBlock(user_token, False)
+            
+            win32security.SetTokenInformation(primary_token, win32security.TokenSessionId, session_id)
+
+            try:
+                user_token = win32ts.WTSQueryUserToken(session_id)
+                env = win32profile.CreateEnvironmentBlock(user_token, False)
+            except Exception:
+                env = None
 
             startup = win32process.STARTUPINFO()
             startup.lpDesktop = "winsta0\\default"
@@ -5333,10 +5340,19 @@ def cmd_host():
                 None,
                 startup,
             )
-            win32api.CloseHandle(primary_token)
             return proc_info, session_id
+        except Exception as e:
+            return None, session_id
         finally:
-            win32api.CloseHandle(user_token)
+            if primary_token:
+                try: win32api.CloseHandle(primary_token)
+                except Exception: pass
+            if current_token:
+                try: win32api.CloseHandle(current_token)
+                except Exception: pass
+            if user_token:
+                try: win32api.CloseHandle(user_token)
+                except Exception: pass
 
     exe_path = sys.executable if not getattr(sys, 'frozen', False) else sys.argv[0]
     if not getattr(sys, 'frozen', False):
@@ -5895,7 +5911,7 @@ if __name__ == "__main__":
             sys.exit(0)
             
         import win32event, win32api, winerror
-        _daemon_mutex = win32event.CreateMutex(None, 1, "Global\\ObylonDaemonMutex")
+        _daemon_mutex = win32event.CreateMutex(None, 1, "Local\\ObylonDaemonMutex")
         if win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS:
             logger.error("Another instance of the agent is already running.", component="system")
             sys.exit(1)
