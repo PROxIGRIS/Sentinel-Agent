@@ -5894,6 +5894,17 @@ if __name__ == "__main__":
         if is_cli_command:
             sys.exit(0)
             
+        import win32event, win32api, winerror
+        _daemon_mutex = win32event.CreateMutex(None, 1, "Global\\ObylonDaemonMutex")
+        if win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS:
+            logger.error("Another instance of the agent is already running.", component="system")
+            sys.exit(1)
+            
+        import ctypes
+        if not ctypes.windll.shell32.IsUserAnAdmin():
+            logger.critical("Daemon must run as Administrator or SYSTEM! Do not run the exe manually.", component="system")
+            sys.exit(1)
+            
         BuildInfo.print_banner()
             
         harden_installation()
