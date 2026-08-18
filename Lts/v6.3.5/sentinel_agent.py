@@ -5698,6 +5698,13 @@ if __name__ == "__main__":
         if is_cli_command:
             import logging
             logging.getLogger().setLevel(logging.CRITICAL)
+            import structlog
+            # Prevent structlog from outputting to stdout for pure CLI commands
+            structlog.configure(
+                processors=[structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S", utc=False)],
+                logger_factory=structlog.ReturnLoggerFactory(),
+                wrapper_class=structlog.make_filtering_bound_logger(logging.CRITICAL),
+            )
             
         if args.verbose or args.dev:
             import logging
@@ -5789,8 +5796,10 @@ if __name__ == "__main__":
         # ---------------------------------------------------------
         # Standard Boot / Activation Path (Requires logs)
         # ---------------------------------------------------------
-        if not is_cli_command:
-            BuildInfo.print_banner()
+        if is_cli_command:
+            sys.exit(0)
+            
+        BuildInfo.print_banner()
             
         harden_installation()
 
