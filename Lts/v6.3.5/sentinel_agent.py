@@ -193,25 +193,47 @@ def setup_structlog():
         log_dir = Path(os.environ.get('PROGRAMDATA', 'C:\\ProgramData')) / 'Obylon' / 'logs'
         log_dir.mkdir(parents=True, exist_ok=True)
     except (PermissionError, OSError):
-        # Non-admin PC or restricted environment — log beside the script instead
         log_dir = Path(os.path.dirname(os.path.abspath(__file__))) / '.obylon_logs'
-        try:
-            log_dir.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass  # Console-only logging is fine for a demo
+        try: log_dir.mkdir(parents=True, exist_ok=True)
+        except Exception: pass
+        
     try:
         import ctypes
         ctypes.windll.kernel32.SetFileAttributesW(str(log_dir), 2)
+    except Exception: pass
+
+    class MultiStream:
+        def __init__(self, streams):
+            self.streams = [s for s in streams if s is not None]
+        def write(self, data):
+            for s in self.streams:
+                try:
+                    s.write(data)
+                    s.flush()
+                except Exception: pass
+        def flush(self):
+            for s in self.streams:
+                try: s.flush()
+                except Exception: pass
+                
+    log_file_path = log_dir / "obylon.log"
+    try:
+        log_file = open(log_file_path, "a", encoding="utf-8")
     except Exception:
-        pass
-    
+        log_file = None
+
+    if sys.stdout.name != os.devnull:
+        output_stream = MultiStream([sys.stdout, log_file])
+    else:
+        output_stream = MultiStream([log_file]) if log_file else open(os.devnull, "w")
+
     structlog.configure(
         processors=[
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S.%f", utc=False),
             custom_log_renderer,
         ],
-        logger_factory=structlog.PrintLoggerFactory(),
+        logger_factory=structlog.PrintLoggerFactory(file=output_stream),
         wrapper_class=structlog.make_filtering_bound_logger(0),
     )
     return structlog.get_logger("obylon_agent")
