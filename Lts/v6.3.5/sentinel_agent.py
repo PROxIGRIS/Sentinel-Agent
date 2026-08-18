@@ -4950,8 +4950,7 @@ class BuildInfo:
     @staticmethod
     def print_banner():
         try:
-            # Force VT100 ANSI processing on older Windows terminals
-            os.system('color')
+            # Removed os.system('color') to prevent console flash in background
             logo = """
 \033[96m     ██████╗ ██████╗ ██╗   ██╗██╗      ██████╗ ███╗   ██╗\033[0m
 \033[96m    ██╔═══██╗██╔══██╗╚██╗ ██╔╝██║     ██╔═══██╗████╗  ██║\033[0m
@@ -5663,7 +5662,9 @@ if __name__ == "__main__":
     
     # Enable Windows 10 ANSI color support in cmd/powershell
     import os
-    os.system('')
+    import sys
+    if "obylonc" in os.path.basename(sys.executable).lower():
+        os.system('')
     
     C_BLUE = "\033[1;34m"
     C_GREEN = "\033[92m"
@@ -5757,6 +5758,10 @@ if __name__ == "__main__":
             
         if args.command == "diagnose":
             cmd_diagnose(dev_mode=args.dev)
+            
+        if args.command == "ai":
+            prompt = " ".join(args.prompt) if args.prompt else ""
+            cmd_ai(prompt)
             
         if args.command == "host":
             cmd_host()
