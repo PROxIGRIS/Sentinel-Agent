@@ -5476,6 +5476,47 @@ def cmd_diagnose(dev_mode=False):
             print(f"\n{C_DIM}[DEV] Traceback:\n{traceback.format_exc()}{C_RESET}")
         sys.exit(1)
 
+def cmd_boot(action: str):
+    import subprocess
+    task_name = "ObylonAgent"
+    app_path = str(Path(os.environ.get('PROGRAMFILES', 'C:\\Program Files')) / "Obylon" / "obylon.exe")
+    
+    if action == "status":
+        result = subprocess.run(["schtasks", "/query", "/tn", task_name], capture_output=True, text=True)
+        if result.returncode == 0:
+            if "Disabled" in result.stdout:
+                print(f"{C_YELLOW}Boot task exists but is currently DISABLED.{C_RESET}")
+            else:
+                print(f"{C_GREEN}Boot task is configured and ENABLED.{C_RESET}")
+        else:
+            print(f"{C_RED}Boot task is NOT FOUND or not configured.{C_RESET}")
+            
+    elif action == "enable":
+        # Create or enable the task
+        cmd = [
+            "schtasks", "/create", "/tn", task_name,
+            "/tr", f'"{app_path}" host',
+            "/sc", "onstart", "/ru", "SYSTEM", "/rl", "HIGHEST", "/f"
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            print(f"{C_GREEN}Successfully ENABLED Obylon to run on boot.{C_RESET}")
+        else:
+            print(f"{C_RED}Failed to enable boot task: {result.stderr}{C_RESET}")
+            print(f"{C_DIM}Are you running terminal as Administrator?{C_RESET}")
+            
+    elif action == "disable":
+        # We delete it so it won't run, or we can just disable it
+        cmd = ["schtasks", "/change", "/tn", task_name, "/disable"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            print(f"{C_GREEN}Successfully DISABLED Obylon from running on boot.{C_RESET}")
+        else:
+            print(f"{C_RED}Failed to disable boot task. It might not exist.{C_RESET}")
+            print(f"{C_DIM}Are you running terminal as Administrator?{C_RESET}")
+            
+    sys.exit(0)
+
 def cmd_ai(initial_prompt: str = ""):
     import json
     import urllib.request
@@ -5684,6 +5725,11 @@ if __name__ == "__main__":
         ai_parser.add_argument("--dev", action="store_true", help=argparse.SUPPRESS)
         ai_parser.add_argument("--verbose", "--debug", action="store_true", help=argparse.SUPPRESS)
         
+        boot_parser = subparsers.add_parser("boot", help="Check or change startup behavior (requires Admin)")
+        boot_parser.add_argument("action", choices=["status", "enable", "disable"], help="The boot action to perform")
+        boot_parser.add_argument("--dev", action="store_true", help=argparse.SUPPRESS)
+        boot_parser.add_argument("--verbose", "--debug", action="store_true", help=argparse.SUPPRESS)
+        
         # Check if they only provided --help, let argparse handle it
         args, unknown = parser.parse_known_args()
         
@@ -5723,6 +5769,9 @@ if __name__ == "__main__":
             
         if args.command == "support-bundle":
             cmd_support_bundle()
+            
+        if args.command == "boot":
+            cmd_boot(args.action)
             
         if args.command == "deactivate":
             if not args.yes:
