@@ -5793,16 +5793,6 @@ if __name__ == "__main__":
             print(f"Agent Version: v{BuildInfo.VERSION}\n")
             sys.exit(0)
 
-        # ---------------------------------------------------------
-        # Standard Boot / Activation Path (Requires logs)
-        # ---------------------------------------------------------
-        if is_cli_command:
-            sys.exit(0)
-            
-        BuildInfo.print_banner()
-            
-        harden_installation()
-
         if args.command == "activate":
             import platform
             hostname = platform.node()
@@ -5826,6 +5816,16 @@ if __name__ == "__main__":
             else:
                 print(f"{C_RED}✖ Activation failed:{C_RESET} {status}")
                 sys.exit(1)
+
+        # ---------------------------------------------------------
+        # Standard Boot / Activation Path (Requires logs)
+        # ---------------------------------------------------------
+        if is_cli_command:
+            sys.exit(0)
+            
+        BuildInfo.print_banner()
+            
+        harden_installation()
 
         # 2. The Standard Boot Path (No Command)
         if not vault.load() or not vault.get("ACCESS_TOKEN"):
