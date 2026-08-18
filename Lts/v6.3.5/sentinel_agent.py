@@ -180,6 +180,19 @@ def custom_log_renderer(logger, name, event_dict):
     return f"\033[90m[{timestamp}]\033[0m {icon} {c_comp}[{component}]\033[0m \033[97m{event}\033[0m{extras}"
 
 def setup_structlog():
+    # Fix for pythonw / console=False where sys.stdout is None causing structlog/print to crash
+    import sys
+    if sys.stdout is None:
+        class DummyStream:
+            def write(self, x): pass
+            def flush(self): pass
+        sys.stdout = DummyStream()
+    if sys.stderr is None:
+        class DummyStream:
+            def write(self, x): pass
+            def flush(self): pass
+        sys.stderr = DummyStream()
+        
     # Setup structlog for console + file — fallback to script dir if ProgramData is locked
     try:
         log_dir = Path(os.environ.get('PROGRAMDATA', 'C:\\ProgramData')) / 'Obylon' / 'logs'
@@ -5463,6 +5476,98 @@ def cmd_diagnose(dev_mode=False):
             print(f"\n{C_DIM}[DEV] Traceback:\n{traceback.format_exc()}{C_RESET}")
         sys.exit(1)
 
+def cmd_ai(initial_prompt: str = ""):
+    import json
+    import urllib.request
+    import time
+    
+    LIMIT_FILE = Path.home() / ".obylon_ai_limit.json"
+    
+    context = """You are Obylon AI, a dedicated technical support assistant for the Obylon Sentinel Endpoint Agent.
+Your scope is ONLY technical support for Obylon. Refuse to answer questions outside this scope.
+
+CLI Structure (`obylonc`):
+- `obylonc activate <LICENSE_KEY>`: Activates the agent.
+- `obylonc status`: Prints license status.
+- `obylonc diagnose`: Runs network checks.
+- `obylonc support-bundle`: Generates logs zip.
+- `obylonc deactivate`: Wipes local vault.
+
+Fleet Deployment Instructions (Seed Mode):
+To deploy Obylon across an entire school fleet without manual UI interaction:
+1. Create a plain text file named `license_seed.txt`.
+2. Paste your valid Obylon License Key (e.g. OBY-XXXX) into this file (no extra spaces).
+3. Place `license_seed.txt` in the same folder as `obylon-setup.exe`.
+4. Run `obylon-setup.exe /SILENT` via MDM, Group Policy (GPO), or Intune.
+5. The installer will auto-detect the seed file, activate, and register the workstation.
+
+Reply in clear, helpful, terminal-friendly plain text. Be concise but polite.
+"""
+    import base64
+    api_key = base64.b64decode(b"QVEuQWI4Uk42SWxJREsxQktaTGFmOVlXcGVrZUFFRnNSZ2ZNLTZ1eWRScWM2d2R6VFpZakE=").decode('utf-8')
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    
+    messages = []
+    
+    print("\033[1;34m=== Obylon AI Support ===\033[0m")
+    print("\033[90mType 'exit' or 'quit' to end the chat.\033[0m\n")
+    
+    def check_rate_limit():
+        limit_data = {"count": 0, "window_start": time.time()}
+        if LIMIT_FILE.exists():
+            try:
+                limit_data = json.loads(LIMIT_FILE.read_text())
+            except: pass
+        if time.time() - limit_data.get("window_start", 0) > 3600:
+            limit_data = {"count": 0, "window_start": time.time()}
+        if limit_data["count"] >= 20:
+            print(f"\n\033[91mRate limit exceeded. You can only send 20 messages per hour.\033[0m")
+            sys.exit(1)
+        limit_data["count"] += 1
+        try:
+            LIMIT_FILE.write_text(json.dumps(limit_data))
+        except: pass
+        return limit_data["count"]
+        
+    def ask_ai(user_text):
+        count = check_rate_limit()
+        messages.append({"role": "user", "parts": [{"text": user_text}]})
+        
+        payload = {
+            "contents": messages,
+            "systemInstruction": {"parts": [{"text": context}]},
+            "generationConfig": {"temperature": 0.2}
+        }
+        
+        req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers={'Content-Type': 'application/json'})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as response:
+                res_data = json.loads(response.read().decode())
+                text = res_data.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+                messages.append({"role": "model", "parts": [{"text": text}]})
+                print(f"\n\033[1;36mObylon AI:\033[0m")
+                print(f"\033[97m{text}\033[0m")
+                print(f"\033[90m[{20 - count} msgs left]\033[0m\n")
+        except Exception as e:
+            print(f"\n\033[91mFailed to contact AI: {e}\033[0m\n")
+            messages.pop() # Remove the failed message so they can retry
+
+    if initial_prompt:
+        ask_ai(initial_prompt)
+        
+    while True:
+        try:
+            user_input = input("\033[1;32mYou:\033[0m ").strip()
+            if not user_input:
+                continue
+            if user_input.lower() in ['exit', 'quit']:
+                print("\033[90mGoodbye!\033[0m")
+                break
+            ask_ai(user_input)
+        except (KeyboardInterrupt, EOFError):
+            print("\n\033[90mGoodbye!\033[0m")
+            break
+
 def cmd_support_bundle():
     import json
     import platform
@@ -5520,6 +5625,10 @@ if __name__ == "__main__":
     import time
     from datetime import datetime, timezone, timedelta
     
+    # Enable Windows 10 ANSI color support in cmd/powershell
+    import os
+    os.system('')
+    
     C_BLUE = "\033[1;34m"
     C_GREEN = "\033[92m"
     C_RED = "\033[91m"
@@ -5530,8 +5639,9 @@ if __name__ == "__main__":
     
     try:
         parser = argparse.ArgumentParser(
+            prog="obylonc",
             description=f"{C_BLUE}Obylon Sentinel Endpoint Agent - Management CLI{C_RESET}\nTo run the agent normally, launch without any arguments.",
-            epilog=f"{C_CYAN}Examples:{C_RESET}\n  obylon activate OBY-XXXX-XXXX\n  obylon diagnose --dev\n  obylon support-bundle",
+            epilog=f"{C_CYAN}Examples:{C_RESET}\n  obylonc activate OBY-XXXX-XXXX\n  obylonc diagnose --dev\n  obylonc support-bundle\n  obylonc ai \"How do I do fleet deployment?\"",
             formatter_class=CustomHelpFormatter
         )
         
@@ -5568,6 +5678,11 @@ if __name__ == "__main__":
         support_parser = subparsers.add_parser("support-bundle", help="Generate a support bundle for troubleshooting")
         support_parser.add_argument("--dev", action="store_true", help=argparse.SUPPRESS)
         support_parser.add_argument("--verbose", "--debug", action="store_true", help=argparse.SUPPRESS)
+        
+        ai_parser = subparsers.add_parser("ai", help="Ask Obylon Support AI a technical question")
+        ai_parser.add_argument("prompt", nargs="*", help="Your question for the AI (optional, launches chat if omitted)")
+        ai_parser.add_argument("--dev", action="store_true", help=argparse.SUPPRESS)
+        ai_parser.add_argument("--verbose", "--debug", action="store_true", help=argparse.SUPPRESS)
         
         # Check if they only provided --help, let argparse handle it
         args, unknown = parser.parse_known_args()
