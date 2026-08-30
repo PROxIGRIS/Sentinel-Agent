@@ -766,12 +766,12 @@ class ObylonVault:
             self._data = json.loads(decrypted.decode("utf-8"))
             if self._data.get("SERVER_SIG"):
                 sig_payload = {
-                    "license_id": self._data.get("LICENSE_ID"),
-                    "node_id": self._data.get("NODE_ID"),
+                    "license_id": None if self._data.get("LICENSE_ID") in (None, "") else self._data.get("LICENSE_ID"),
+                    "node_id": None if self._data.get("NODE_ID") in (None, "") else self._data.get("NODE_ID"),
                     "hardware_uuid": HARDWARE_UUID,
                     "expires_at": None if self._data.get("EXPIRES_AT") in (None, "") else self._data.get("EXPIRES_AT"),
-                    "issued_at": self._data.get("LAST_HEARTBEAT_OK_AT"),
-                    "status": self._data.get("LICENSE_STATUS")
+                    "issued_at": None if self._data.get("LAST_HEARTBEAT_OK_AT") in (None, "") else self._data.get("LAST_HEARTBEAT_OK_AT"),
+                    "status": None if self._data.get("LICENSE_STATUS") in (None, "") else self._data.get("LICENSE_STATUS")
                 }
                 if not verify_server_signature(sig_payload, self._data["SERVER_SIG"]):
                     logger.critical("Cached vault signature invalid — possible tampering", component="vault")
