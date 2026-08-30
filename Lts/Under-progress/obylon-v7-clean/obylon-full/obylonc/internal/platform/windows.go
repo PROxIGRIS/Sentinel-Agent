@@ -162,7 +162,7 @@ func UnhideFile(path string) error {
 // get_hardware_fingerprint() reads)
 // ---------------------------------------------------------------------
 
-const fingerprintTimeout = 8 * time.Second
+const fingerprintTimeout = 60 * time.Second
 
 // fingerprintScript queries Win32_ComputerSystemProduct.UUID, the first
 // Win32_DiskDrive.SerialNumber, and the first physical
