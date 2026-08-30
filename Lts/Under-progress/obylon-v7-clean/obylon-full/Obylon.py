@@ -768,6 +768,7 @@ class ObylonVault:
                 sig_payload = {
                     "license_id": self._data.get("LICENSE_ID"),
                     "node_id": self._data.get("NODE_ID"),
+                    "hardware_uuid": HARDWARE_UUID,
                     "expires_at": None if self._data.get("EXPIRES_AT") in (None, "") else self._data.get("EXPIRES_AT"),
                     "issued_at": self._data.get("LAST_HEARTBEAT_OK_AT"),
                     "status": self._data.get("LICENSE_STATUS")
@@ -6607,8 +6608,9 @@ def license_heartbeat_loop(workstation_id: str):
                     return
 
                 status = data.get("status")
-                vault._data["HEARTBEAT_TELEMETRY_AT"] = data.get("issued_at", datetime.now(timezone.utc).isoformat())
+                vault._data["LAST_HEARTBEAT_OK_AT"] = data.get("issued_at", datetime.now(timezone.utc).isoformat())
                 vault._data["LICENSE_STATUS"] = status
+                if data.get("server_sig"): vault._data["SERVER_SIG"] = data.get("server_sig")
                 if data.get("expires_at"): vault._data["EXPIRES_AT"] = data.get("expires_at")
                 if data.get("grace_days"): vault._data["GRACE_DAYS"] = data.get("grace_days")
                 
