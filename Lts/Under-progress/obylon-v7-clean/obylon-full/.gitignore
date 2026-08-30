@@ -1,0 +1,26 @@
+# Compiled executables
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go toolchain and archives
+go.zip
+go/
+
+# Python caches and PyInstaller artifacts
+__pycache__/
+build/
+dist/
+*.spec
+*.pyc
+*.pyo
+*.pyd
+
+# Rust build artifacts
+rust/target/
+**/*.rs.bk
+
+# OS generated files
+.DS_Store
+Thumbs.db
