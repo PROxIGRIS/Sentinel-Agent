@@ -6607,7 +6607,7 @@ def license_heartbeat_loop(workstation_id: str):
                     return
 
                 status = data.get("status")
-                vault._data["LAST_HEARTBEAT_OK_AT"] = data.get("issued_at", datetime.now(timezone.utc).isoformat())
+                vault._data["HEARTBEAT_TELEMETRY_AT"] = data.get("issued_at", datetime.now(timezone.utc).isoformat())
                 vault._data["LICENSE_STATUS"] = status
                 if data.get("expires_at"): vault._data["EXPIRES_AT"] = data.get("expires_at")
                 if data.get("grace_days"): vault._data["GRACE_DAYS"] = data.get("grace_days")

@@ -1,5 +1,5 @@
 """
-NEXUS SENTINEL — School Endpoint Monitor
+OBYLON SENTINEL — School Endpoint Monitor
 =========================================
 Authorized deployment tool for school-managed Windows workstations.
 
@@ -181,7 +181,8 @@ def verify_server_signature(payload: dict, server_sig: str) -> bool:
             "node_id": payload.get("node_id"),
             "hardware_uuid": HARDWARE_UUID,
             "expires_at": payload.get("expires_at"),
-            "issued_at": payload.get("issued_at")
+            "issued_at": payload.get("issued_at"),
+            "status": payload.get("status")
         }, separators=(',', ':')).encode("utf-8")
         
         verify_key.verify(sign_payload, base64.b64decode(server_sig))
@@ -313,8 +314,37 @@ def resolve_user_profile_dir() -> Path:
     return Path.home()
 
 USER_HOME = resolve_user_profile_dir()
-ALIAS_FILE = USER_HOME / ".sentinel_alias"
-IDENTITY_FILE = USER_HOME / ".sentinel_id"
+ALIAS_FILE = USER_HOME / ".obylon_alias"
+
+# A3: Machine-level identity — one HARDWARE_UUID per machine instead of one per
+# user profile, so shared PCs no longer fragment license seats across students.
+IDENTITY_FILE = Path(os.environ.get('PROGRAMDATA', 'C:\\ProgramData')) / "Obylon" / ".machine_id"
+
+
+def _migrate_legacy_paths():
+    """Rename .sentinel_* → .obylon_* for existing installations (A5)."""
+    migrations = [
+        (USER_HOME / ".sentinel_alias",             USER_HOME / ".obylon_alias"),
+        (USER_HOME / ".sentinel_vault.db",          USER_HOME / ".obylon_vault.db"),
+        (USER_HOME / ".sentinel_vault.db-wal",      USER_HOME / ".obylon_vault.db-wal"),
+        (USER_HOME / ".sentinel_vault.db-shm",      USER_HOME / ".obylon_vault.db-shm"),
+        (USER_HOME / ".sentinel_cache",             USER_HOME / ".obylon_cache"),
+        (USER_HOME / ".sentinel_dead_letter.jsonl", USER_HOME / ".obylon_dead_letter.jsonl"),
+        (USER_HOME / ".sentinel_err.txt",           USER_HOME / ".obylon_err.txt"),
+    ]
+    for old, new in migrations:
+        if old.exists() and not new.exists():
+            try:
+                old.rename(new)
+                logger.info("Migrated legacy path", component="upgrade", old=str(old), new=str(new))
+            except Exception as e:
+                logger.warning("Legacy path migration failed", component="upgrade",
+                               old=str(old), error=str(e))
+
+
+# Runs at import time — before any module-level file access (e.g. the alias
+# read in get_workstation_identity() below) touches a renamed path.
+_migrate_legacy_paths()
 
 # --- THE LAZARUS DYING BREATH SOS ---
 def dying_breath_handler(exc_type, exc_value, exc_tb):
@@ -618,10 +648,20 @@ class ObylonVault:
             with open(self.config_file, "rb") as f: encrypted = f.read()
             decrypted = self._decrypt(encrypted)
             self._data = json.loads(decrypted.decode("utf-8"))
+            if self._data.get("SERVER_SIG"):
+                sig_payload = {
+                    "license_id": self._data.get("LICENSE_ID"),
+                    "node_id": self._data.get("NODE_ID"),
+                    "expires_at": self._data.get("EXPIRES_AT"),
+                    "issued_at": self._data.get("LAST_HEARTBEAT_OK_AT"),
+                    "status": self._data.get("LICENSE_STATUS")
+                }
+                if not verify_server_signature(sig_payload, self._data["SERVER_SIG"]):
+                    logger.critical("Cached vault signature invalid — possible tampering", component="vault")
+                    return False
             return True
         except Exception as e:
             logger.error(f"Config corruption detected (stale enc from another PC?): {e}", component="vault")
-            # Auto-purge the corrupted enc file so it doesn't block future boots
             try:
                 self._unhide_file()
                 os.remove(self.config_file)
@@ -642,10 +682,20 @@ class ObylonVault:
         json_str = json.dumps(self._data)
         encrypted = self._encrypt(json_str.encode("utf-8"))
         self._unhide_file()
-        with open(self.config_file, "wb") as f:
-            f.write(encrypted)
-        try: ctypes.windll.kernel32.SetFileAttributesW(str(self.config_file), 2)
-        except Exception: pass
+        try:
+            with open(self.config_file, "wb") as f:
+                f.write(encrypted)
+            try: ctypes.windll.kernel32.SetFileAttributesW(str(self.config_file), 2)
+            except Exception: pass
+        except PermissionError:
+            # A1: standard student users cannot write to ProgramData. Degrade
+            # to the user profile and log loudly instead of crashing.
+            fallback = os.path.join(str(USER_HOME), ".obylon_vault_fallback.enc")
+            logger.warning("VAULT WRITE DENIED on primary path — falling back to user profile. "
+                           "This is a degraded state; vault may not persist across session flips.",
+                           component="vault", primary=self.config_file, fallback=fallback)
+            with open(fallback, "wb") as f:
+                f.write(encrypted)
 
     def provision_via_license(self, license_key: str, hostname: str, hardware_uuid: str, hardware_fingerprint: str) -> str:
         try:
@@ -683,7 +733,8 @@ class ObylonVault:
                     "MAX_SEEN_UTC": data.get("issued_at", datetime.now(timezone.utc).isoformat()),
                     "EXPIRES_AT": data.get("expires_at"),
                     "GRACE_DAYS": data.get("grace_days", 14),
-                    "SERVER_SIG": data.get("server_sig")
+                    "SERVER_SIG": data.get("server_sig"),
+                    "HARDWARE_FINGERPRINT_AT_ACTIVATION": hardware_fingerprint  # A3: enables clone detection
                 }
                 self._save()
                 logger.info("🔒 Obylon DPAPI Vault provisioned via license.", component="vault")
@@ -768,7 +819,7 @@ def get_workstation_identity() -> str:
     """Resolve workstation display name.
 
     Precedence:
-      1. Contents of ~/.sentinel_alias (stripped) if present and non-empty.
+      1. Contents of ~/.obylon_alias (stripped) if present and non-empty.
       2. Fallback: socket.gethostname().
     Runs BEFORE the Supabase client is initialized so registration uses the
     forged identity from the very first network call.
@@ -836,15 +887,16 @@ FSM_EFFECTIVE_FLOOR = 0.4          # Effective score floor for ANOMALY_ESCALATIO
 # --- Phase 6: The Forensic Vault ---
 # Anchored to USER_HOME (the interactive student's profile) — see
 # resolve_user_profile_dir() for why Path.home() is unsafe here.
-VAULT_DB = USER_HOME / ".sentinel_vault.db"
-CACHE_DIR = USER_HOME / ".sentinel_cache"
+VAULT_DB = USER_HOME / ".obylon_vault.db"
+CACHE_DIR = USER_HOME / ".obylon_cache"
 SYNC_INTERVAL = 30  # seconds
 
 # --- Hardware Mutex ---
 OPTICS_LOCK = threading.Lock()
 VAULT_LOCK = threading.Lock()  # SQLite is single-writer; serialize writes
 
-IDENTITY_FILE = USER_HOME / ".sentinel_id"  # re-anchor (was Path.home())
+# IDENTITY_FILE is now anchored at machine level (ProgramData) — see its
+# definition next to ALIAS_FILE above (A3). No per-user re-anchor here.
 COMMAND_TTL_SEC = 60
 TERMINATE_GRACE_SEC = 10
 
@@ -1498,7 +1550,7 @@ _FACULTY_HARDWARE_IDS = {
 
 def get_hardware_uuid() -> str:
     try:
-        p = Path.home() / ".sentinel_id"
+        p = IDENTITY_FILE  # machine-level (A3)
         if p.exists():
             return p.read_text(encoding="utf-8").strip()
     except Exception:
@@ -3301,6 +3353,24 @@ def get_hardware_fingerprint() -> str:
 HARDWARE_FINGERPRINT = get_hardware_fingerprint()
 
 
+def validate_identity_integrity(vault, live_fingerprint: str):
+    """A3: Detect cloned images by comparing the activation-time fingerprint
+    persisted in the vault against the live hardware fingerprint."""
+    stored_fp = vault.get("HARDWARE_FINGERPRINT_AT_ACTIVATION")
+    if not stored_fp:
+        return  # Pre-A3 activation or first boot — nothing to compare against
+    if stored_fp != live_fingerprint:
+        logger.critical(
+            "CLONE DETECTED: hardware fingerprint at activation does not match current hardware. "
+            "This machine was likely imaged from another provisioned workstation. "
+            "Run 'obylonc reset-identity --confirm' and re-activate.",
+            component="identity",
+            stored_prefix=stored_fp[:16],
+            live_prefix=live_fingerprint[:16]
+        )
+        sys.exit(1)
+
+
 def register_workstation() -> str:
     """
     Indestructible registration. Will patiently wait for network initialization
@@ -4036,7 +4106,7 @@ def _surge_one(row) -> bool:
 
     # Dead-letter discard: permanently-failing rows are dropped after cap
     if attempts >= MAX_VAULT_ATTEMPTS:
-        dead_letter_path = Path.home() / ".sentinel_dead_letter.jsonl"
+        dead_letter_path = Path.home() / ".obylon_dead_letter.jsonl"
         try:
             with open(dead_letter_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps({
@@ -4499,7 +4569,11 @@ class RemoteConfigManager:
                 EXAM_FREEZE_DURATION = max(30, min(new_exam_freeze, 600))  # Clamp 30s - 10min safety
                 
             else:
-                logger.info("No remote config found for this agent_id", component="c2", agent_id=self.agent_id)
+                # Steady-state result of a poll that happens every ~3-4s for the
+                # agent's entire lifetime — INFO here means thousands of identical
+                # lines a day, each one a flush to the log file. DEBUG keeps it
+                # available for --dev/--verbose without the constant I/O.
+                logger.debug("No remote config found for this agent_id", component="c2", agent_id=self.agent_id)
         except Exception as e:
             if "timeout" in str(e).lower():
                 logger.warning("Remote config fetch timed out (non-fatal)", component="c2")
@@ -5373,7 +5447,7 @@ def scan_loop(workstation_id: str) -> None:
         except Exception as e:
             logger.error("ENGINE CRASH DETECTED", component="engine", error=str(e), exc_info=True)
             try:
-                with open(str(Path.home() / ".sentinel_err.txt"), "a") as f:
+                with open(str(Path.home() / ".obylon_err.txt"), "a") as f:
                     f.write(f"[{now_iso()}] scan_loop error: {str(e)}\n")
             except Exception: pass
             
@@ -5453,16 +5527,23 @@ def _parse_iso(ts: str | None) -> datetime | None:
 # =====================================================
 # CLASSROOM FOCUS OVERLAY
 # =====================================================
+# One persistent Tk interpreter + window for the agent's entire lifetime.
+# Previously this was torn down and rebuilt on every single lock/unlock —
+# each cycle paid for a fresh Tcl interpreter init plus a new topmost,
+# alpha-blended (layered), override-redirect fullscreen window. That's
+# real GDI/USER-object and DWM composition churn that doesn't show up in
+# Task Manager's default CPU/Memory columns but compounds across a school
+# day of repeated classroom_focus toggles into system-wide sluggishness.
+# Now we build it once and just show/hide it.
 _overlay_root = None
 _overlay_lock = threading.Lock()
+_overlay_ready = threading.Event()
 
-def _run_overlay():
-    """Create and run a fullscreen red overlay with 'LOOK AT THE TEACHER' text.
-    This runs tkinter's mainloop in its own thread. tkinter is NOT thread-safe,
-    so all creation/destruction MUST happen on the same thread that calls mainloop."""
+def _overlay_thread_main():
     global _overlay_root
     try:
         root = tk.Tk()
+        root.withdraw()  # created hidden — never destroyed, only shown/hidden
         root.attributes('-fullscreen', True)
         root.attributes('-topmost', True)
         root.attributes('-alpha', 0.85)
@@ -5480,6 +5561,7 @@ def _run_overlay():
 
         with _overlay_lock:
             _overlay_root = root
+        _overlay_ready.set()
 
         root.mainloop()
     except Exception as e:
@@ -5487,25 +5569,39 @@ def _run_overlay():
     finally:
         with _overlay_lock:
             _overlay_root = None
+        _overlay_ready.set()  # unblock any waiter even on failure
+
+def _ensure_overlay_thread():
+    """Start the one persistent overlay thread if it isn't already running.
+    Safe to call repeatedly and safe to call once at boot to pre-warm it,
+    which also removes the first-use Tcl-interpreter-startup latency spike."""
+    if not _overlay_ready.is_set():
+        threading.Thread(target=_overlay_thread_main, daemon=True, name="ClassroomOverlay").start()
+        _overlay_ready.wait(timeout=5)
 
 def show_classroom_focus_overlay():
-    """Launch the overlay if not already showing."""
+    """Show the overlay (building the persistent window on first use)."""
+    _ensure_overlay_thread()
     with _overlay_lock:
-        if _overlay_root is not None:
-            return  # Already showing
-    threading.Thread(target=_run_overlay, daemon=True, name="ClassroomOverlay").start()
+        root = _overlay_root
+    if root is None:
+        logger.error("Overlay window unavailable", component="overlay")
+        return
+    root.after(0, lambda: (root.deiconify(), root.attributes('-topmost', True), root.lift()))
     logger.info("Classroom Focus overlay engaged", component="overlay")
 
 def hide_classroom_focus_overlay():
-    """Destroy the overlay from any thread by scheduling destroy() on the tk thread."""
+    """Hide the overlay without destroying the underlying window/interpreter."""
     with _overlay_lock:
         root = _overlay_root
     if root is not None:
         try:
-            root.after(0, root.destroy)
+            root.after(0, root.withdraw)
         except Exception:
             pass
     logger.info("Classroom Focus overlay disengaged", component="overlay")
+
+
 
 
 # =====================================================
@@ -6086,19 +6182,47 @@ def license_heartbeat_loop(workstation_id: str):
         
         time.sleep(300) # Every 5 minutes
 
+def _launched_by_broker() -> bool:
+    """A0: Verify our parent process is actually obylon.exe (the Session 0
+    broker). Checks real parent PID ownership, not a spoofable env var."""
+    try:
+        parent = psutil.Process(os.getpid()).parent()
+        if parent is None:
+            return False
+        return os.path.basename(parent.exe()).lower() == "obylon.exe"
+    except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
+        return False
+
+
 def harden_installation():
     """Hide everything important from casual snooping."""
     paths_to_hide = [
         VAULT_DB,
         CACHE_DIR,
         Path(os.environ.get('PROGRAMDATA', 'C:\\ProgramData')) / "Obylon",
-        Path.home() / ".sentinel_alias",
-        Path.home() / ".sentinel_id",
+        Path.home() / ".obylon_alias",
+        Path(os.environ.get('PROGRAMDATA', 'C:\\ProgramData')) / "Obylon" / ".machine_id",
     ]
     for p in paths_to_hide:
         if p.exists():
             _hide_path(p)
     logger.info("Self-protection: critical paths hidden from explorer", component="startup")
+
+    # A1: Grant Authenticated Users write access to obylon.enc ONLY (not the
+    # whole folder) so the non-admin session worker can persist vault state.
+    # This runs as SYSTEM during boot via the broker — narrow blast radius:
+    # .machine_id and license_seed.txt stay student-read-only.
+    vault_file = Path(os.environ.get('PROGRAMDATA', 'C:\\ProgramData')) / "Obylon" / "obylon.enc"
+    if vault_file.exists():
+        try:
+            subprocess.run(
+                ["icacls", str(vault_file), "/grant", "Authenticated Users:(M)", "/C"],
+                capture_output=True, timeout=10
+            )
+            logger.info("Vault ACL set for session worker write access",
+                        component="hardening", path=str(vault_file))
+        except Exception as e:
+            logger.warning("Vault ACL grant failed", component="hardening", error=str(e))
 
 def main() -> None:
     try:
@@ -6115,6 +6239,12 @@ def main() -> None:
             logger.info("Hardware/adapter monitors started.", component="boot")
         except Exception as e:
             logger.warning(f"Hardware/adapter monitors unavailable (non-fatal): {e}", component="boot")
+
+        try:
+            _ensure_overlay_thread()
+            logger.info("Classroom focus overlay pre-warmed.", component="boot")
+        except Exception as e:
+            logger.warning(f"Overlay pre-warm failed (non-fatal): {e}", component="boot")
         
         logger.info("Decrypting localized evidence vault...", component="vault")
         try:
@@ -6332,15 +6462,26 @@ def cmd_host():
             return win32ts.WTSQueryUserToken(session_id), "wts-user"
         except Exception:
             pass
-        for proc in psutil.process_iter(["pid", "name", "session_id"]):
+        # NOTE: psutil has no "session_id" Process attribute on any platform (it isn't
+        # exposed anywhere in _pswindows.py or the generic Process class) — passing it to
+        # process_iter(attrs=...) raises ValueError("invalid attr name 'session_id'") on the
+        # very first iteration, before the inner try/except body ever runs, so this fallback
+        # previously never executed successfully. Session id has to come from the real
+        # kernel32 ProcessIdToSessionId API instead (bound as win32ts.ProcessIdToSessionId).
+        for proc in psutil.process_iter(["pid", "name"]):
             try:
-                if proc.info.get("session_id") != session_id:
+                name = (proc.info.get("name") or "").lower()
+                if name not in ("explorer.exe", "sihost.exe", "ctfmon.exe", "userinit.exe"):
                     continue
-                if (proc.info.get("name") or "").lower() not in (
-                        "explorer.exe", "sihost.exe", "ctfmon.exe", "userinit.exe"):
+                pid = proc.info["pid"]
+                try:
+                    proc_session = win32ts.ProcessIdToSessionId(pid)
+                except Exception:
+                    continue
+                if proc_session != session_id:
                     continue
                 ph = win32api.OpenProcess(win32con.PROCESS_QUERY_INFORMATION,
-                                          False, proc.info["pid"])
+                                          False, pid)
                 try:
                     return win32security.OpenProcessToken(ph, win32con.MAXIMUM_ALLOWED), "shell-borrowed"
                 finally:
@@ -6817,6 +6958,26 @@ def cmd_support_bundle():
     print("Please attach this file when contacting Obylon Support.")
     sys.exit(0)
 
+def cmd_reset_identity():
+    """A3: Wipe machine identity + vault so a golden image can be captured
+    without carrying activation state into clones. Requires --confirm."""
+    machine_id = Path(os.environ.get('PROGRAMDATA', 'C:\\ProgramData')) / "Obylon" / ".machine_id"
+    vault_file = Path(os.environ.get('PROGRAMDATA', 'C:\\ProgramData')) / "Obylon" / "obylon.enc"
+    targets = [machine_id, vault_file, ALIAS_FILE]
+    for p in targets:
+        if p.exists():
+            try:
+                # Unhide before deleting
+                ctypes.windll.kernel32.SetFileAttributesW(str(p), 128)
+                p.unlink()
+                print(f"  {C_GREEN}✔ Removed {p.name}{C_RESET}")
+            except Exception as e:
+                print(f"  {C_RED}✖ Failed to remove {p.name}: {e}{C_RESET}")
+    print(f"\n{C_GREEN}Identity wiped. Safe to sysprep/image capture.{C_RESET}")
+    print(f"{C_DIM}The server-side license entitlement is NOT affected.{C_RESET}")
+    sys.exit(0)
+
+
 class CustomHelpFormatter(argparse.HelpFormatter):
     def _format_action_invocation(self, action):
         if not action.option_strings or action.nargs == 0:
@@ -6824,7 +6985,7 @@ class CustomHelpFormatter(argparse.HelpFormatter):
         return ', '.join(action.option_strings)
         
     def _format_usage(self, usage, actions, groups, prefix):
-        return "\033[1;34mUsage:\033[0m sentinel_agent.py <command> [options]\n"
+        return "\033[1;34mUsage:\033[0m obylonc <command> [options]\n"
 
 if __name__ == "__main__":
     import argparse
@@ -6861,7 +7022,8 @@ if __name__ == "__main__":
         subparsers = parser.add_subparsers(dest="command", help="Available Commands", metavar="")
         
         activate_parser = subparsers.add_parser("activate", help="Activate agent with a license key")
-        activate_parser.add_argument("LICENSE_KEY", help="The license key to activate")
+        activate_parser.add_argument("LICENSE_KEY", nargs="?", help="The license key to activate")
+        activate_parser.add_argument("--key-file", help="Path to file containing the license key (deleted after read)")
         activate_parser.add_argument("--dev", action="store_true", help=argparse.SUPPRESS)
         activate_parser.add_argument("--verbose", "--debug", action="store_true", help=argparse.SUPPRESS)
         
@@ -6896,6 +7058,11 @@ if __name__ == "__main__":
         boot_parser.add_argument("action", choices=["status", "enable", "disable"], help="The boot action to perform")
         boot_parser.add_argument("--dev", action="store_true", help=argparse.SUPPRESS)
         boot_parser.add_argument("--verbose", "--debug", action="store_true", help=argparse.SUPPRESS)
+
+        reset_parser = subparsers.add_parser("reset-identity", help="Wipe machine identity for image capture (requires Admin)")
+        reset_parser.add_argument("--confirm", action="store_true", required=True, help="Confirm identity wipe")
+        reset_parser.add_argument("--dev", action="store_true", help=argparse.SUPPRESS)
+        reset_parser.add_argument("--verbose", "--debug", action="store_true", help=argparse.SUPPRESS)
         
         # Check if they only provided --help, let argparse handle it
         args, unknown = parser.parse_known_args()
@@ -6906,7 +7073,14 @@ if __name__ == "__main__":
             sys.exit(1)
         
         # If they provided a command, it's a CLI action (don't boot the agent, silence normal logs)
-        is_cli_command = args.command is not None or args.version
+        # EXCEPT "host" — that's not a one-shot CLI action, it's the long-lived Session 0
+        # broker daemon (WTSQueryUserToken/CreateProcessAsUser supervisor loop). If it gets
+        # routed through the CLI-silencing branch below, structlog gets reconfigured to
+        # ReturnLoggerFactory() + a CRITICAL-only filter for the *entire remaining process
+        # lifetime* — every logger.info/.warning/.error the broker ever emits (including
+        # session-spawn failures) silently goes nowhere, forever. Keep "host" on the real
+        # file+console structlog sink from setup_structlog().
+        is_cli_command = (args.command is not None and args.command != "host") or args.version
         
         if is_cli_command:
             import logging
@@ -6943,6 +7117,9 @@ if __name__ == "__main__":
             
         if args.command == "boot":
             cmd_boot(args.action)
+
+        if args.command == "reset-identity":
+            cmd_reset_identity()
             
         if args.command == "deactivate":
             if not args.yes:
@@ -6963,7 +7140,7 @@ if __name__ == "__main__":
                     vault_path.unlink()
                     
                 # Nuke the offline evidence DB
-                vault_db = Path.home() / ".sentinel_vault.db"
+                vault_db = Path.home() / ".obylon_vault.db"
                 if vault_db.exists():
                     try:
                         import ctypes
@@ -7016,8 +7193,25 @@ if __name__ == "__main__":
         if args.command == "activate":
             import platform
             hostname = platform.node()
+            # A4: prefer --key-file so the license key never appears on the
+            # process command line (visible to EDR/SIEM). The key file is
+            # always deleted after read — even if activation later fails.
+            if args.key_file:
+                kf = Path(args.key_file)
+                try:
+                    license_key = kf.read_text(encoding="utf-8").strip()
+                except Exception as e:
+                    print(f"{C_RED}✖ Could not read key file: {e}{C_RESET}")
+                    sys.exit(1)
+                try: kf.unlink()  # Belt: agent also deletes, in case installer cleanup raced
+                except Exception: pass
+            else:
+                license_key = args.LICENSE_KEY
+            if not license_key:
+                print(f"{C_RED}✖ No license key provided. Use: obylonc activate <LICENSE_KEY> or --key-file <path>{C_RESET}")
+                sys.exit(1)
             print(f"{C_CYAN}▶ Provisioning Agent...{C_RESET}")
-            status = vault.provision_via_license(args.LICENSE_KEY, hostname, HARDWARE_UUID, HARDWARE_FINGERPRINT)
+            status = vault.provision_via_license(license_key, hostname, HARDWARE_UUID, HARDWARE_FINGERPRINT)
             if status == "SUCCESS":
                 print(f"{C_GREEN}✔ Activation complete. Agent ready for background execution.{C_RESET}")
                 sys.exit(0)
@@ -7049,9 +7243,15 @@ if __name__ == "__main__":
             logger.error("Another instance of the agent is already running.", component="system")
             sys.exit(1)
             
-        import ctypes
-        if not ctypes.windll.shell32.IsUserAnAdmin():
-            logger.critical("Daemon must run as Administrator or SYSTEM! Do not run the exe manually.", component="system")
+        # A0: The v6.3.5 admin gate is removed — the v7 Session Broker spawns
+        # the agent AS THE STUDENT USER on purpose (their desktop, proxy config
+        # and TLS roots). Non-admin is now the correct, expected state; the old
+        # gate caused an infinite crash/respawn loop on every student login.
+        # Defense-in-depth: refuse to boot unless actually spawned by the
+        # broker, so double-clicking the exe can't start an unmanaged daemon.
+        if not _launched_by_broker():
+            logger.error("Agent must be started by the Session Broker (obylon.exe host). "
+                         "Do not run the exe manually.", component="system")
             sys.exit(1)
             
         BuildInfo.print_banner()
@@ -7087,6 +7287,9 @@ if __name__ == "__main__":
                 logger.critical("Vault incomplete or missing session. Run: obylon activate <LICENSE_KEY>", component="system")
                 sys.exit(1)
                 
+        # A3: Clone detection — vault is guaranteed loaded at this point.
+        validate_identity_integrity(vault, HARDWARE_FINGERPRINT)
+
         SUPABASE_URL = vault.get("SUPABASE_URL")
         SUPABASE_KEY = vault.get("SUPABASE_ANON_KEY")
         
@@ -7212,7 +7415,7 @@ if __name__ == "__main__":
         if current_max:
             try:
                 max_dt = datetime.fromisoformat(current_max)
-                if datetime.now(timezone.utc) < max_dt:
+                if datetime.now(timezone.utc) + timedelta(minutes=5) < max_dt:
                     logger.critical("Clock rollback detected! Current time is before MAX_SEEN_UTC. Shutting down.", component="system")
                     sys.exit(1)
             except Exception:

@@ -124,7 +124,7 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
-  LicenseKey, DeployMode, SeedPath: string;
+  LicenseKey, DeployMode, SeedPath, TempKeyFile: string;
 begin
   if CurStep = ssPostInstall then
   begin
@@ -140,7 +140,9 @@ begin
     end
     else
     begin
-      if Exec(ExpandConstant('{app}\obylon.exe'), 'activate ' + LicenseKey, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      TempKeyFile := ExpandConstant('{commonappdata}\Obylon\.activate_key');
+      SaveStringToFile(TempKeyFile, LicenseKey, False);
+      if Exec(ExpandConstant('{app}\obylon.exe'), 'activate --key-file "' + TempKeyFile + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
       begin
         if ResultCode <> 0 then
         begin
@@ -156,6 +158,7 @@ begin
         if not WizardSilent() then
           MsgBox('Failed to execute activation command.', mbError, MB_OK);
       end;
+      DeleteFile(TempKeyFile);
     end;
   end;
 end;

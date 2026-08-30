@@ -1543,6 +1543,39 @@ fn enumerate_adapter_names() -> Option<std::collections::HashSet<String>> {
 // Core only ever has one legitimate client (the Brain process it spawned
 // itself), but this should be locked down to SYSTEM + the session's user
 // SID before this goes further than a pilot.
+unsafe fn is_process_descendant_of(mut child: u32, ancestor: u32) -> bool {
+    if child == ancestor { return true; }
+    let snapshot = match windows::Win32::System::Diagnostics::ToolHelp::CreateToolhelp32Snapshot(
+        windows::Win32::System::Diagnostics::ToolHelp::TH32CS_SNAPPROCESS, 0
+    ) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let mut entry = windows::Win32::System::Diagnostics::ToolHelp::PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<windows::Win32::System::Diagnostics::ToolHelp::PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut parent_map = std::collections::HashMap::new();
+    if windows::Win32::System::Diagnostics::ToolHelp::Process32FirstW(snapshot, &mut entry).is_ok() {
+        loop {
+            parent_map.insert(entry.th32ProcessID, entry.th32ParentProcessID);
+            if windows::Win32::System::Diagnostics::ToolHelp::Process32NextW(snapshot, &mut entry).is_err() {
+                break;
+            }
+        }
+    }
+    let _ = windows::Win32::Foundation::CloseHandle(snapshot);
+    for _ in 0..10 {
+        if child == ancestor { return true; }
+        if let Some(&p) = parent_map.get(&child) {
+            if p == 0 { break; }
+            child = p;
+        } else {
+            break;
+        }
+    }
+    false
+}
 
 fn handle_connection(pipe: HANDLE) {
     unsafe {
@@ -1560,7 +1593,7 @@ fn handle_connection(pipe: HANDLE) {
         let expected_pid = BRAIN_PID.load(Ordering::SeqCst);
         let authorized = GetNamedPipeClientProcessId(pipe, &mut client_pid).is_ok()
             && expected_pid != 0
-            && client_pid == expected_pid;
+            && is_process_descendant_of(client_pid, expected_pid);
         if !authorized {
             logger().warn(
                 "ipc",
@@ -1648,6 +1681,7 @@ fn handle_connection(pipe: HANDLE) {
         let out = response.to_line();
         let mut written: u32 = 0;
         let _ = WriteFile(pipe, Some(out.as_bytes()), Some(&mut written), None);
+        unsafe { let _ = windows::Win32::Storage::FileSystem::FlushFileBuffers(pipe); }
         let _ = DisconnectNamedPipe(pipe);
         let _ = CloseHandle(pipe);
     }
