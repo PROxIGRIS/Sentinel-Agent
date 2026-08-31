@@ -86,7 +86,8 @@ import os
 
 if len(sys.argv) > 1 and sys.argv[1] == "--warmup":
     import time
-    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "warmup.lock"), "w") as f:
+    exe_dir = os.path.dirname(sys.executable)
+    with open(os.path.join(exe_dir, "warmup.lock"), "w") as f:
         f.write(str(time.time()))
     sys.exit(0)
 
@@ -7255,6 +7256,7 @@ if __name__ == "__main__":
                 input("\nPress Enter to exit...")
         except Exception:
             pass
+
 
 
 
