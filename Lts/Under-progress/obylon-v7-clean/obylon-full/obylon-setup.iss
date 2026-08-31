@@ -10,7 +10,7 @@ LicenseFile=C:\Sentinel-Agent\Lts\v6.3.5\License.rtf
 WizardStyle=modern
 WizardResizable=yes
 OutputDir=C:\Sentinel-Agent\Lts\Under-progress\obylon-v7-clean\obylon-full\dist
-OutputBaseFilename=obylon-setup
+OutputBaseFilename=obylon-setup-final
 SetupIconFile=C:\Sentinel-Agent\Lts\Under-progress\obylon-v7-clean\obylon-full\icon.ico
 Compression=lzma2/fast
 SolidCompression=yes
@@ -148,7 +148,7 @@ procedure CurStepChanged(CurStep: TSetupStep);
       Exec('cmd.exe', '/C ""' + ExpandConstant('{app}\obylon.exe') + '" --warmup"', '', SW_HIDE, ewNoWait, ResultCode);
       
       // Wait for 1 second to see if it finishes instantly
-      Sleep(1000);
+      Sleep(3000);
       
       if not FileExists(LockFile) then
       begin
@@ -245,6 +245,8 @@ begin
     end;
   end;
 end;
+
+
 
 
 

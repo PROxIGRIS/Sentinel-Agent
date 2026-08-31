@@ -83,6 +83,13 @@ from __future__ import annotations # MUST BE FIRST
 # OCR ever actually runs in a given session.
 import sys
 import os
+
+if len(sys.argv) > 1 and sys.argv[1] == "--warmup":
+    import time
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "warmup.lock"), "w") as f:
+        f.write(str(time.time()))
+    sys.exit(0)
+
 import certifi
 os.environ["SSL_CERT_FILE"] = certifi.where()
 import unicodedata
@@ -6737,13 +6744,6 @@ def harden_installation():
                 logger.warning("ACL grant failed", component="hardening", error=str(e), path=str(f))
 
 def main() -> None:
-    if len(sys.argv) > 1 and sys.argv[1] == "--warmup":
-        # Silent exit for InnoSetup so Windows Defender Block at First Sight
-        # runs its 5-minute analysis during the install phase, not at boot.
-        import time
-        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "warmup.lock"), "w") as f:
-            f.write(str(time.time()))
-        sys.exit(0)
     try:
         # Process + network-adapter monitoring now live in ObylonCore.exe
         # (native ToolHelp32/GetAdaptersAddresses polling, no WMI/COM, no
@@ -7255,6 +7255,7 @@ if __name__ == "__main__":
                 input("\nPress Enter to exit...")
         except Exception:
             pass
+
 
 
 
