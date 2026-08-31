@@ -5166,7 +5166,10 @@ def remote_config_loop(workstation_id: str) -> None:
     _name_current_thread("remote_config")
     manager = RemoteConfigManager(workstation_id)
     while True:
-        manager.fetch()
+        workstation_id = resolve_offline_wid(workstation_id)
+        manager.agent_id = workstation_id
+        if not workstation_id.startswith("offline-"):
+            manager.fetch()
         time.sleep(3)
 
 # =====================================================
@@ -5532,12 +5535,12 @@ def scan_loop(workstation_id: str) -> None:
     except Exception as e:
         logger.error(f"Failed to initialize WMI for USB detection: {e}", component="usb-exec")
         wmi_conn = None
-
     removable_drives: set = set()
     _letters_refresh_ts = 0.0
 
     while True:
         try: # THE GLOBAL SHIELD
+            workstation_id = resolve_offline_wid(workstation_id)
             # v7: removable-drive enumeration is a WMI associator walk — far too
             # expensive for a 1s tick. Refresh every 5s and feed the Provenance
             # Engine so every other consumer shares one authoritative set.
@@ -5968,6 +5971,17 @@ def scan_loop(workstation_id: str) -> None:
             except Exception: pass
             
         time.sleep(SCAN_INTERVAL)
+
+def resolve_offline_wid(current_wid: str) -> str:
+    if current_wid.startswith("offline-") and sb is not None:
+        try:
+            new_wid = register_workstation()
+            if new_wid and not new_wid.startswith("offline-"):
+                write_identity_beacon(new_wid)
+                return new_wid
+        except Exception:
+            pass
+    return current_wid
 
 def heartbeat_loop(workstation_id: str) -> None:
     _name_current_thread("heartbeat")
@@ -7256,6 +7270,12 @@ if __name__ == "__main__":
                 input("\nPress Enter to exit...")
         except Exception:
             pass
+
+
+
+
+
+
 
 
 
