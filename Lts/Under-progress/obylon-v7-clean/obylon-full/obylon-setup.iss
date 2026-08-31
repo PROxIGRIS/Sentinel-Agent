@@ -125,13 +125,53 @@ begin
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
-var
-  ResultCode: Integer;
-  LicenseKey, DeployMode, SeedPath, TempKeyFile, BootLog: string;
-begin
-  if CurStep = ssPostInstall then
+  var
+    ResultCode: Integer;
+    LicenseKey, DeployMode, SeedPath, TempKeyFile, BootLog: string;
+    WarmupPage: TOutputProgressWizardPage;
+    LockFile: string;
+    I: Integer;
+    Quotes: array[0..4] of string;
   begin
-    BootLog := ExpandConstant('{commonappdata}\Obylon\logs\boot_task.log');
+    if CurStep = ssPostInstall then
+    begin
+      Quotes[0] := 'Asking Windows Defender for permission to exist...';
+      Quotes[1] := 'Still waiting. Defender is really inspecting those 1s and 0s...';
+      Quotes[2] := 'Any minute now... We promise this only happens once.';
+      Quotes[3] := 'Defender is making sure we aren''t a crypto miner...';
+      Quotes[4] := 'Almost there! The cloud is thinking very hard...';
+      
+      LockFile := ExpandConstant('{app}\warmup.lock');
+      DeleteFile(LockFile);
+      
+      // Warm up the executable asynchronously
+      Exec('cmd.exe', '/C ""' + ExpandConstant('{app}\obylon.exe') + '" --warmup"', '', SW_HIDE, ewNoWait, ResultCode);
+      
+      // Wait for 1 second to see if it finishes instantly
+      Sleep(1000);
+      
+      if not FileExists(LockFile) then
+      begin
+        WarmupPage := CreateOutputProgressPage('Analyzing Security Payload', 'Windows Defender "Block at First Sight" is performing a one-time cloud analysis.');
+        WarmupPage.Show;
+        WarmupPage.ProgressBar.Style := npbstMarquee;
+        
+        I := 0;
+        while not FileExists(LockFile) do
+        begin
+          if (I mod 50 = 0) then
+            WarmupPage.SetText(Quotes[(I div 50) mod 5], '');
+          
+          Sleep(100);
+          
+          I := I + 1;
+        end;
+        
+        WarmupPage.Hide;
+        WarmupPage.Free;
+      end;
+
+      BootLog := ExpandConstant('{commonappdata}\Obylon\logs\boot_task.log');
     if not Exec('cmd.exe', '/C ""' + ExpandConstant('{app}\obylonc.exe') + '" boot enable > "' + BootLog + '" 2>&1"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
       RaiseException('Failed to execute Obylon boot-task setup.');
     if ResultCode <> 0 then
@@ -205,6 +245,8 @@ begin
     end;
   end;
 end;
+
+
 
 
 
