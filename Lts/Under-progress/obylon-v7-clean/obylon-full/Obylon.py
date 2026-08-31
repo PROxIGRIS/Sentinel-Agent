@@ -75,6 +75,7 @@ v7.0.0 ENGINEERING CHANGELOG
 
 from __future__ import annotations # MUST BE FIRST
 
+
 # PIL/pytesseract moved to a lazy import — see _ensure_ocr_libs() — they're
 # only ever needed inside the OCR worker's _run(), and loading PIL's C
 # extensions is real, measurable time that was previously being paid
@@ -3896,7 +3897,12 @@ def capture_screenshot() -> bytes | None:
     try:
         resp = _core_ipc_call({"cmd": "capture_screenshot"})
         if not resp.get("ok"):
-            logger.error("screenshot failed", component="evidence", error=resp.get("error"))
+            err_msg = str(resp.get("error", ""))
+            if "BitBlt/GetDIBits failed" in err_msg:
+                # Desktop is locked, asleep, or on a secure UAC prompt. Normal state.
+                logger.debug("screenshot unavailable (desktop locked or secure prompt active)", component="evidence")
+            else:
+                logger.error("screenshot failed", component="evidence", error=err_msg)
             return None
         return _read_and_delete_capture(resp["path"])
     except Exception as e:
@@ -4145,6 +4151,9 @@ def _build_alert_payload(workstation_id: str, title: str | None, proc: str | Non
                          severity: str, is_backlogged: bool,
                          created_at: str | None = None,
                          reason: str | None = None) -> dict:
+    if is_backlogged:
+        title = f"[OFFLINE/DELAYED] {title}" if title else "[OFFLINE/DELAYED]"
+
     # DB ENUM mapping for Supabase constraints
     db_severity = "medium" if severity == "warning" else severity
     payload = {
@@ -4166,6 +4175,9 @@ def _build_alert_payload(workstation_id: str, title: str | None, proc: str | Non
 def _build_activity_payload(workstation_id: str, title: str | None, proc: str | None,
                             severity: str, is_anomaly: bool, is_backlogged: bool,
                             created_at: str | None = None) -> dict:
+    if is_backlogged:
+        title = f"[OFFLINE/DELAYED] {title}" if title else "[OFFLINE/DELAYED]"
+
     # DB ENUM mapping for Supabase constraints
     db_severity = "medium" if severity == "warning" else severity
     payload = {
@@ -4573,6 +4585,16 @@ def _surge_one(row) -> bool:
     try:
         payload = json.loads(payload_json)
         evidence = json.loads(evidence_json) if evidence_json else {}
+
+        # Resolve fake offline UUID to real UUID to prevent Postgres 22P02 errors
+        if str(payload.get("workstation_id", "")).startswith("offline-") and sb is not None:
+            try:
+                # Hit the cache/DB to get the real UUID for this hardware
+                _wid_res = sb.table("workstations").select("id").eq("hardware_uuid", HARDWARE_UUID).execute()
+                if _wid_res.data:
+                    payload["workstation_id"] = _wid_res.data[0]["id"]
+            except Exception:
+                pass
 
         # TIMESTAMP RIGIDITY: replay the original capture time.
         payload["created_at"] = created_at
@@ -6777,6 +6799,12 @@ def main() -> None:
         except Exception as e:
             logger.warning(f"Identity beacon write failed (Core's direct fast-lane reporting degrades to queue-only): {e}", component="identity")
 
+        try:
+            _core_ipc_call({"cmd": "brain_security_ready"})
+            logger.info("Signaled security-ready to Core.", component="boot")
+        except Exception as e:
+            logger.error(f"Failed to signal security-ready to Core: {e}", component="boot")
+
         # Define all critical systems for the Necromancer to watch
         core_systems = {
             "license_heartbeat": {"target": license_heartbeat_loop, "args": (wid,)},
@@ -7204,7 +7232,7 @@ if __name__ == "__main__":
             logger.info(f"🛡️ {mode_str} ENFORCEMENT ENABLED - Warden is fully armed.", component="boot")
             
         time.sleep(0.5) # Give the hooks a fraction of a second to attach
-
+        
         # Launch the Agent
         main()
 
@@ -7220,6 +7248,11 @@ if __name__ == "__main__":
                 input("\nPress Enter to exit...")
         except Exception:
             pass
+
+
+
+
+
 
 
 

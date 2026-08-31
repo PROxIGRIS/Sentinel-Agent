@@ -1,0 +1,70 @@
+[90m[21:02:59.204][0m [93m⚠[0m [93m[lexengine][0m [97mgood_vocab.txt not found — dual-corpus scoring degraded[0m
+[90m[21:03:00.464][0m [96mℹ[0m [96m[system][0m [97m[_launched_by_broker] Starting check from pid=6588[0m
+[90m[21:03:00.484][0m [96mℹ[0m [96m[system][0m [97m[_launched_by_broker] Level 0: parent pid=6184 name=obylon.exe[0m
+[90m[21:03:00.504][0m [96mℹ[0m [96m[system][0m [97m[_launched_by_broker] Level 1: parent pid=5792 name=obyloncore.exe[0m
+
+[96m     ██████╗ ██████╗ ██╗   ██╗██╗      ██████╗ ███╗   ██╗[0m
+[96m    ██╔═══██╗██╔══██╗╚██╗ ██╔╝██║     ██╔═══██╗████╗  ██║[0m
+[96m    ██║   ██║██████╔╝ ╚████╔╝ ██║     ██║   ██║██╔██╗ ██║[0m
+[96m    ██║   ██║██╔══██╗  ╚██╔╝  ██║     ██║   ██║██║╚██╗██║[0m
+[96m    ╚██████╔╝██████╔╝   ██║   ███████╗╚██████╔╝██║ ╚████║[0m
+[96m     ╚═════╝ ╚═════╝    ╚═╝   ╚══════╝ ╚═════╝ ╚═╝  ╚═══╝[0m
+[91m                   S E N T I N E L   C O R E             [0m
+[90m========================================================================================[0m
+
+[97m[SYSTEM DIAGNOSTICS][0m
+[90m[*][0m Loading Lexical Neural Engine                [93m[ DEGRADED ][0m
+[90m[*][0m Verifying Local Vault Integrity              [92m[ OK ][0m
+[90m[*][0m Initializing WMI Core Hooks                  [92m[ OK ][0m
+[90m[*][0m Synchronizing IPC Channels                   [92m[ OK ][0m
+
+[92m[+] ALL SYSTEMS NOMINAL. SENTINEL CORE IGNITED.[0m
+[90m========================================================================================[0m
+
+[90m[21:03:03.488][0m [96mℹ[0m [96m[boot][0m [97m=== OBYLON SENTINEL v7.0.0-LTS (LTS) ===[0m
+[90m[21:03:03.488][0m [96mℹ[0m [96m[boot][0m [97mBuild Details[0m [90mbuild_date=[37m2026-08-18 [90mcommit=[37msession-broker+provenance+multilingual
+[90m[21:03:03.489][0m [96mℹ[0m [96m[boot][0m [97mDeployment target: School-managed Windows workstations[0m
+[90m[21:03:03.489][0m [96mℹ[0m [96m[boot][0m [97mAll evidence only on confirmed policy violation. Authorized IT use only.[0m
+[90m[21:03:05.120][0m [96mℹ[0m [96m[startup][0m [97mSelf-protection: critical paths hidden from explorer[0m
+[90m[21:03:05.309][0m [96mℹ[0m [96m[hardening][0m [97mACL set for session worker write access[0m [90mpath=[37mC:\ProgramData\Obylon\obylon.enc
+[90m[21:03:05.394][0m [96mℹ[0m [96m[hardening][0m [97mACL set for session worker write access[0m [90mpath=[37mC:\ProgramData\Obylon\identity_beacon.json
+[90m[21:03:05.480][0m [96mℹ[0m [96m[hardening][0m [97mACL set for session worker write access[0m [90mpath=[37mC:\ProgramData\Obylon\fastlane_rules.json
+[90m[21:03:15.676][0m [93m⚠[0m [93m[identity][0m [97mhardware fingerprint helper timed out[0m
+[90m[21:03:15.705][0m [93m⚠[0m [93m[identity][0m [97mhardware fingerprint unavailable during boot; clone validation deferred[0m
+[90m[21:03:19.133][0m [96mℹ[0m [96m[identity][0m [97mAttempting vault handshake with Supabase...[0m
+[90m[21:03:20.819][0m [96mℹ[0m [96m[identity][0m [97mHandshake secured[0m [90mwid=[37m689fa038-289d-42d5-95ab-5e24d2c68a0c
+[90m[21:03:20.821][0m [96mℹ[0m [96m[warden][0m [97mConnected to ObylonCore enforcement process[0m
+[90m[21:03:20.822][0m [96mℹ[0m [96m[boot][0m [97mWarden hooks installed and running in background.[0m
+[90m[21:03:20.822][0m [96mℹ[0m [96m[boot][0m [97m🛡️ STANDARD ENFORCEMENT ENABLED - Warden is fully armed.[0m
+[90m[21:03:21.325][0m [96mℹ[0m [96m[boot][0m [97mUSB insertion monitor started.[0m
+[90m[21:03:21.340][0m [96mℹ[0m [96m[boot][0m [97mObylonCore enforcement process reachable.[0m
+[90m[21:03:21.404][0m [96mℹ[0m [96m[boot][0m [97mFast-lane rules written[0m [90mbanned_processes=[37m2
+[90m[21:03:21.419][0m [96mℹ[0m [96m[vault][0m [97mDecrypting localized evidence vault...[0m
+[90m[21:03:21.877][0m [96mℹ[0m [96m[vault][0m [97mforensic vault online[0m [90mvault_db=[37mC:\Users\rajiv\.obylon_vault.db
+[90m[21:03:21.878][0m [96mℹ[0m [96m[vault][0m [97mVault initialized successfully.[0m
+[90m[21:03:21.878][0m [96mℹ[0m [96m[storage][0m [97mJoining Supabase storage & identity checks (started earlier this boot)...[0m
+[90m[21:03:21.878][0m [96mℹ[0m [96m[identity][0m [97mWorkstation identity verified.[0m [90mwid=[37m689fa038-289d-42d5-95ab-5e24d2c68a0c
+[90m[21:03:21.966][0m [96mℹ[0m [96m[identity][0m [97mIdentity beacon written for Core's fast-lane reporting[0m
+[90m[21:03:21.982][0m [96mℹ[0m [96m[boot][0m [97mInitializing core telemetry subsystems...[0m
+[90m[21:03:21.982][0m [96mℹ[0m [96m[boot][0m [97mSpinning up thread pool for license_heartbeat...[0m [90mstatus=[37marmed
+[90m[21:03:21.983][0m [93m⚠[0m [93m[net-adapter][0m [97m📡 NEW NETWORK ADAPTER DETECTED[0m [90madapter=[37mLocal Area Connection* 1 [90msuspect_tethering=[37mFalse
+[90m[21:03:21.983][0m [96mℹ[0m [96m[license][0m [97mSession refresh failed: Auth session missing![0m
+[90m[21:03:22.042][0m [96mℹ[0m [96m[boot][0m [97mSpinning up thread pool for heartbeat...[0m [90mstatus=[37marmed
+[90m[21:03:22.125][0m [96mℹ[0m [96m[boot][0m [97mSpinning up thread pool for scanner...[0m [90mstatus=[37marmed
+[90m[21:03:22.217][0m [96mℹ[0m [96m[boot][0m [97mSpinning up thread pool for actions...[0m [90mstatus=[37marmed
+[90m[21:03:22.316][0m [96mℹ[0m [96m[boot][0m [97mSpinning up thread pool for panic...[0m [90mstatus=[37marmed
+[90m[21:03:22.376][0m [96mℹ[0m [96m[boot][0m [97mSpinning up thread pool for sync_surge...[0m [90mstatus=[37marmed
+[90m[21:03:22.378][0m [96mℹ[0m [96m[sync][0m [97mdaemon armed[0m [90minterval=[37m30
+[90m[21:03:22.438][0m [96mℹ[0m [96m[boot][0m [97mSpinning up thread pool for optics_ws...[0m [90mstatus=[37marmed
+[90m[21:03:22.581][0m [96mℹ[0m [96m[boot][0m [97mSpinning up thread pool for dpdp_monitor...[0m [90mstatus=[37marmed
+[90m[21:03:22.599][0m [96mℹ[0m [96m[optics][0m [97mStarting WebSocket server on 8765...[0m
+[90m[21:03:22.657][0m [96mℹ[0m [96m[boot][0m [97mSpinning up thread pool for c2_poller...[0m [90mstatus=[37marmed
+[90m[21:03:22.751][0m [96mℹ[0m [96m[boot][0m [97mSpinning up thread pool for realtime_c2...[0m [90mstatus=[37marmed
+[90m[21:03:22.803][0m [96mℹ[0m [96m[realtime][0m [97mConnecting to Supabase Realtime WebSocket...[0m
+[90m[21:03:22.846][0m [96mℹ[0m [96m[boot][0m [97mSpinning up thread pool for perf_snapshot...[0m [90mstatus=[37marmed
+[90m[21:03:22.972][0m [96mℹ[0m [96m[system][0m [97mAll subsystems online and armed.[0m [90mthreads=[37m11
+[90m[21:03:23.022][0m [96mℹ[0m [96m[system][0m [97mLazarus Watchdog active. Monitoring vitals...[0m
+[90m[21:03:24.234][0m [96mℹ[0m [96m[realtime][0m [97mRealtime C2 channel subscribed (CDC + Broadcast + Global)[0m [90mtarget=[37m689fa038-289d-42d5-95ab-5e24d2c68a0c
+[90m[21:03:24.853][0m [93m⚠[0m [93m[net-adapter][0m [97m📡 NEW NETWORK ADAPTER DETECTED[0m [90madapter=[37mWi-Fi [90msuspect_tethering=[37mFalse
+[90m[21:03:24.875][0m [93m⚠[0m [93m[net-adapter][0m [97m📡 NEW NETWORK ADAPTER DETECTED[0m [90madapter=[37mLocal Area Connection* 1 [90msuspect_tethering=[37mFalse
+[90m[21:03:25.973][0m [93m⚠[0m [93m[net-adapter][0m [97m📡 NEW NETWORK ADAPTER DETECTED[0m [90madapter=[37mLocal Area Connection* 2 [90msuspect_tethering=[37mFalse

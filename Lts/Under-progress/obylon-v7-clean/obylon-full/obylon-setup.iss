@@ -10,7 +10,7 @@ LicenseFile=C:\Sentinel-Agent\Lts\v6.3.5\License.rtf
 WizardStyle=modern
 WizardResizable=yes
 OutputDir=C:\Sentinel-Agent\Lts\Under-progress\obylon-v7-clean\obylon-full\dist
-OutputBaseFilename=obylon-setup-final-ssot
+OutputBaseFilename=obylon-setup
 SetupIconFile=C:\Sentinel-Agent\Lts\Under-progress\obylon-v7-clean\obylon-full\icon.ico
 Compression=lzma2/fast
 SolidCompression=yes
@@ -21,16 +21,14 @@ UninstallDisplayIcon={app}\obylonc.exe
 
 [Dirs]
 Name: "{commonappdata}\Obylon"; Permissions: system-full admins-full
+Name: "{commonappdata}\Obylon\logs"; Permissions: system-full admins-full
 
 [Files]
-Source: "C:\Sentinel-Agent\Lts\Under-progress\obylon-v7-clean\obylon-full\dist\obylon.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "C:\Sentinel-Agent\Lts\Under-progress\obylon-v7-clean\obylon-full\dist\obylon\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "C:\Sentinel-Agent\Lts\Under-progress\obylon-v7-clean\obylon-full\dist\obylonc.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "C:\Sentinel-Agent\Lts\Under-progress\obylon-v7-clean\obylon-full\rust\target\release\ObylonBroker.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "C:\Sentinel-Agent\Lts\Under-progress\obylon-v7-clean\obylon-full\rust\target\release\ObylonCore.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "C:\Obylon v7\Agent\LTS update\tesseract_engine\*"; DestDir: "{app}\tesseract_engine"; Flags: ignoreversion recursesubdirs createallsubdirs
-
-[Run]
-Filename: "{app}\obylonc.exe"; Parameters: "boot enable"; Flags: runhidden
 
 [UninstallRun]
 Filename: "schtasks.exe"; Parameters: "/delete /tn ""ObylonAgent"" /f"; Flags: runhidden; RunOnceId: "RemoveObylonTask"
@@ -129,10 +127,16 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
-  LicenseKey, DeployMode, SeedPath, TempKeyFile: string;
+  LicenseKey, DeployMode, SeedPath, TempKeyFile, BootLog: string;
 begin
   if CurStep = ssPostInstall then
   begin
+    BootLog := ExpandConstant('{commonappdata}\Obylon\logs\boot_task.log');
+    if not Exec('cmd.exe', '/C ""' + ExpandConstant('{app}\obylonc.exe') + '" boot enable > "' + BootLog + '" 2>&1"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      RaiseException('Failed to execute Obylon boot-task setup.');
+    if ResultCode <> 0 then
+      RaiseException('Obylon boot-task setup failed. See ' + BootLog + ' for details.');
+
     LicenseKey := GetLicenseKey();
     DeployMode := GetDeployMode();
     
@@ -201,4 +205,5 @@ begin
     end;
   end;
 end;
+
 

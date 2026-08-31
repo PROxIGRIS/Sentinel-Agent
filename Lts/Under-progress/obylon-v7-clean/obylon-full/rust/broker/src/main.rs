@@ -16,13 +16,14 @@
 
 use obylon_common::FileLogger;
 use std::env;
+use std::ffi::c_void;
 use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
 use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, LUID,
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, LUID, WAIT_TIMEOUT,
 };
 use windows::Win32::Security::{
     AdjustTokenPrivileges, DuplicateTokenEx, LookupPrivilegeValueW, SecurityImpersonation,
@@ -33,18 +34,52 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
+use windows::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
 use windows::Win32::System::RemoteDesktop::{
     ProcessIdToSessionId, WTSGetActiveConsoleSessionId, WTSQueryUserToken,
 };
 use windows::Win32::System::Threading::{
     CreateMutexW, CreateProcessAsUserW, GetCurrentProcess, OpenProcess, OpenProcessToken,
     CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION,
-    PROCESS_QUERY_LIMITED_INFORMATION, STARTF_USESHOWWINDOW, STARTUPINFOW,
+    PROCESS_QUERY_LIMITED_INFORMATION, STARTF_USESHOWWINDOW, STARTUPINFOW, TerminateProcess,
+    WaitForSingleObject,
 };
 use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
 const LOG_PATH_ENV_FALLBACK: &str = r"C:\ProgramData\Obylon\logs\broker.log";
 const CANDIDATE_SHELLS: &[&str] = &["explorer.exe", "sihost.exe", "ctfmon.exe", "userinit.exe"];
+
+struct ManagedCore {
+    session_id: u32,
+    pid: u32,
+    process: HANDLE,
+    job: HANDLE,
+}
+
+impl ManagedCore {
+    unsafe fn is_alive(&self) -> bool {
+        WaitForSingleObject(self.process, 0) == WAIT_TIMEOUT
+    }
+
+    unsafe fn stop(self, logger: &FileLogger, reason: &str) {
+        logger.info(
+            "broker",
+            "stopping managed Core process tree",
+            &[
+                ("session_id", &self.session_id.to_string()),
+                ("pid", &self.pid.to_string()),
+                ("reason", reason),
+            ],
+        );
+        let _ = TerminateJobObject(self.job, 0);
+        let _ = CloseHandle(self.process);
+        let _ = CloseHandle(self.job);
+    }
+}
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -183,12 +218,74 @@ unsafe fn get_session_token(
     borrow_shell_token(session_id, logger).map(|t| (t, "shell-borrowed"))
 }
 
+unsafe fn create_core_job(logger: &FileLogger) -> Option<HANDLE> {
+    let job = match CreateJobObjectW(None, PCWSTR::null()) {
+        Ok(job) => job,
+        Err(error) => {
+            logger.error(
+                "broker",
+                "could not create Core ownership job",
+                &[("error", &format!("{error:?}"))],
+            );
+            return None;
+        }
+    };
+    let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if SetInformationJobObject(
+        job,
+        JobObjectExtendedLimitInformation,
+        &limits as *const _ as *const c_void,
+        std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+    )
+    .is_err()
+    {
+        logger.error(
+            "broker",
+            "could not configure Core ownership job",
+            &[("error", &format!("{:?}", GetLastError()))],
+        );
+        let _ = CloseHandle(job);
+        return None;
+    }
+    Some(job)
+}
+
+fn ensure_acls(logger: &FileLogger) {
+    use std::process::Command;
+    use std::path::PathBuf;
+    use std::env;
+    let base = env::var("PROGRAMDATA").unwrap_or_else(|_| "C:\\ProgramData".to_string());
+    let vault_dir = PathBuf::from(&base).join("Obylon");
+    let files = vec!["obylon.enc", "identity_beacon.json", "fastlane_rules.json"];
+    
+    for f in files {
+        let path = vault_dir.join(f);
+        if !path.exists() {
+            let _ = std::fs::File::create(&path);
+        }
+        let _ = Command::new("icacls")
+            .arg(&path)
+            .arg("/grant")
+            .arg("Authenticated Users:(M)")
+            .arg("/C")
+            .output();
+    }
+}
+
 unsafe fn spawn_core_in_session(
     session_id: u32,
     core_exe: &str,
     logger: &FileLogger,
-) -> Option<u32> {
+) -> Option<ManagedCore> {
     let (src_token, token_kind) = get_session_token(session_id, logger)?;
+    let job = match create_core_job(logger) {
+        Some(job) => job,
+        None => {
+            let _ = CloseHandle(src_token);
+            return None;
+        }
+    };
 
     let mut primary_token = HANDLE::default();
     let dup_ok = DuplicateTokenEx(
@@ -206,6 +303,7 @@ unsafe fn spawn_core_in_session(
             "DuplicateTokenEx failed",
             &[("error", &format!("{:?}", GetLastError()))],
         );
+        let _ = CloseHandle(job);
         return None;
     }
 
@@ -252,11 +350,23 @@ unsafe fn spawn_core_in_session(
                 ("error", &format!("{:?}", GetLastError())),
             ],
         );
+        let _ = CloseHandle(job);
         return None;
     }
 
     let pid = proc_info.dwProcessId;
-    let _ = CloseHandle(proc_info.hProcess);
+    if AssignProcessToJobObject(job, proc_info.hProcess).is_err() {
+        logger.error(
+            "broker",
+            "could not assign Core to its ownership job; refusing unmanaged Core",
+            &[("error", &format!("{:?}", GetLastError()))],
+        );
+        let _ = TerminateProcess(proc_info.hProcess, 1);
+        let _ = CloseHandle(proc_info.hProcess);
+        let _ = CloseHandle(proc_info.hThread);
+        let _ = CloseHandle(job);
+        return None;
+    }
     let _ = CloseHandle(proc_info.hThread);
 
     logger.info(
@@ -268,7 +378,12 @@ unsafe fn spawn_core_in_session(
             ("token_kind", token_kind),
         ],
     );
-    Some(pid)
+    Some(ManagedCore {
+        session_id,
+        pid,
+        process: proc_info.hProcess,
+        job,
+    })
 }
 
 fn core_exe_path() -> String {
@@ -314,27 +429,37 @@ fn main() {
     }
 
     let core_exe = core_exe_path();
-    let mut spawned_for_session: Option<u32> = None;
-    let mut last_pid: Option<u32> = None;
+    let mut managed_core: Option<ManagedCore> = None;
 
     loop {
         let session_id = unsafe { WTSGetActiveConsoleSessionId() };
         let no_session = session_id == 0xFFFFFFFF;
 
-        let needs_spawn = !no_session
-            && (spawned_for_session != Some(session_id)
-                || last_pid.map_or(true, |pid| !process_is_alive(pid)));
+        let replace_core = managed_core.as_ref().map_or(false, |core| unsafe {
+            no_session || core.session_id != session_id || !core.is_alive()
+        });
+        if replace_core {
+            let reason = if no_session {
+                "no active interactive session"
+            } else if managed_core.as_ref().is_some_and(|core| core.session_id != session_id) {
+                "active session changed"
+            } else {
+                "Core process exited"
+            };
+            if let Some(core) = managed_core.take() {
+                unsafe { core.stop(&logger, reason) };
+            }
+        }
 
-        if needs_spawn {
+        if !no_session && managed_core.is_none() {
+            ensure_acls(&logger);
             match unsafe { spawn_core_in_session(session_id, &core_exe, &logger) } {
-                Some(pid) => {
-                    spawned_for_session = Some(session_id);
-                    last_pid = Some(pid);
-                }
+                Some(core) => managed_core = Some(core),
                 None => {
                     // Expected during the boot race — WTSQueryUserToken can
                     // fail for the first several polls before winlogon has
-                    // fully established the session. Retry, don't escalate.
+                    // fully established the session. Retry without creating
+                    // a second owner for Core.
                 }
             }
         }
@@ -343,14 +468,3 @@ fn main() {
     }
 }
 
-fn process_is_alive(pid: u32) -> bool {
-    unsafe {
-        match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
-            Ok(h) => {
-                let _ = CloseHandle(h);
-                true
-            }
-            Err(_) => false,
-        }
-    }
-}
