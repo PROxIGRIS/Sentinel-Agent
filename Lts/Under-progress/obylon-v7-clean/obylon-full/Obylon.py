@@ -84,26 +84,24 @@ from __future__ import annotations # MUST BE FIRST
 import sys
 import os
 
-if len(sys.argv) > 1 and sys.argv[1] == "--warmup":
-    import time
-    exe_dir = os.path.dirname(sys.executable)
-    with open(os.path.join(exe_dir, "warmup.lock"), "w") as f:
-        f.write(str(time.time()))
-    sys.exit(0)
+
 
 import certifi
 os.environ["SSL_CERT_FILE"] = certifi.where()
 import unicodedata
 
 def _get_tesseract_path():
-    if hasattr(sys, '_MEIPASS'):
-        # PyInstaller temp extraction dir
-        base_dir = sys._MEIPASS
-    elif getattr(sys, 'frozen', False):
-        # Compiled exe directory
+    # In --onedir mode, tesseract is installed next to the exe by the ISS
+    # installer, NOT inside _internal/. We must check the exe directory
+    # first, then fall back to _MEIPASS for development builds.
+    if getattr(sys, 'frozen', False):
+        # Frozen exe — always resolve relative to the user-facing binary
         base_dir = os.path.dirname(sys.executable)
+    elif hasattr(sys, '_MEIPASS'):
+        # PyInstaller temp extraction dir (--onefile dev builds)
+        base_dir = sys._MEIPASS
     else:
-        # Script directory
+        # Script directory (unpackaged dev)
         base_dir = os.path.dirname(os.path.abspath(__file__))
     
     tessdata_dir = os.path.join(base_dir, "tesseract_engine", "tessdata")
@@ -5986,6 +5984,7 @@ def resolve_offline_wid(current_wid: str) -> str:
 def heartbeat_loop(workstation_id: str) -> None:
     _name_current_thread("heartbeat")
     while True:
+        workstation_id = resolve_offline_wid(workstation_id)
         try:
             if sb is not None:
                 sb.table("workstations").update({
@@ -6044,6 +6043,62 @@ def execute_command(cmd: str) -> bool:
         return True
     logger.warning("Unrecognized command — no-op", component="admin", cmd=cmd)
     return False
+
+
+# Central authorization boundary for every externally-triggered admin action.
+# Deny by default: no local role string, editable config value, transport
+# failure, or legacy shell path is permitted to turn a deny into execution.
+_AUTHZ_ACTIONS = {
+    "terminate": "obylon.endpoint.shutdown",
+    "freeze": "obylon.warden.lock",
+    "lock_hardware": "obylon.warden.lock",
+    "unfreeze": "obylon.warden.lock",
+    "classroom_focus": "obylon.classroom.focus",
+    "classroom_focus_end": "obylon.classroom.focus",
+    "kill_task": "obylon.warden.terminate_process",
+    "kill": "obylon.warden.terminate_process",
+    "scalpel": "obylon.warden.terminate_process",
+    "update": "obylon.agent.update",
+    "set_alias": "obylon.policy.update",
+    "lock": "obylon.warden.lock",
+}
+
+def _authz_target(workstation_id: str, cmd: str, metadata: dict) -> dict:
+    """Canonical, secret-free action target sent to Umbraxis for exact-match policy."""
+    target = {"workstation_id": workstation_id, "command": cmd}
+    for key in ("process_name", "process", "target", "target_name", "duration", "alias", "new_name", "name", "url", "sha256"):
+        value = metadata.get(key)
+        if value is not None and value != "":
+            target[key] = value
+    return target
+
+def authorize_admin_action(workstation_id: str, cmd: str, metadata: dict) -> tuple[bool, str]:
+    """Ask the server-authoritative policy engine before any privileged execution."""
+    action_id = _AUTHZ_ACTIONS.get(cmd)
+    if not action_id:
+        return False, "UNKNOWN_ACTION"
+    base_url = str(vault.get("AUTHZ_BASE_URL") or "").rstrip("/")
+    access_token = str(vault.get("AUTHZ_ACCESS_TOKEN") or "")
+    if not base_url.startswith("https://") or not access_token:
+        return False, "AUTHENTICATION_REQUIRED"
+    try:
+        body = json.dumps({"action_id": action_id, "target": _authz_target(workstation_id, cmd, metadata)}, separators=(",", ":")).encode("utf-8")
+        request = urllib.request.Request(
+            base_url + "/api/auth/authorize",
+            data=body,
+            headers={"Content-Type": "application/json", "Authorization": "Bearer " + access_token},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            decision = json.loads(response.read().decode("utf-8"))
+        if decision.get("decision") != "ALLOW" or decision.get("action_id") != action_id:
+            return False, "DENIED"
+        return True, "ALLOW"
+    except Exception as exc:
+        # Do not include a bearer token or request body in logs. A failed
+        # authorization check is terminal; callers must never retry via shell.
+        logger.warning("Server authorization check failed", component="authz", action_id=action_id, error=type(exc).__name__)
+        return False, "AUTHORIZATION_UNAVAILABLE"
 
 
 def _parse_iso(ts: str | None) -> datetime | None:
@@ -6111,6 +6166,10 @@ def realtime_c2_listener(workstation_id: str) -> None:
         max_backoff = 60
 
         while True:
+            # Re-resolve offline WID on each reconnect attempt so that
+            # if the agent booted offline, it subscribes to the real UUID
+            # channel once network is available.
+            workstation_id = resolve_offline_wid(workstation_id)
             try:
                 logger.info("Connecting to Supabase Realtime WebSocket...", component="realtime")
                 client = AsyncRealtimeClient(
@@ -6218,6 +6277,17 @@ def realtime_c2_listener(workstation_id: str) -> None:
 
                             dispatched = True
                             fail_reason = None
+
+                            authorized, authorization_reason = authorize_admin_action(workstation_id, cmd, meta)
+                            if not authorized:
+                                dispatched, fail_reason = False, authorization_reason
+                                if not is_broadcast and sb:
+                                    try:
+                                        sb.table("admin_actions").update({"status": "failed"}).eq("id", action_id).execute()
+                                    except Exception:
+                                        pass
+                                logger.warning("Unauthorized admin action rejected", component="authz", command=cmd, action_id=action_id, reason=authorization_reason)
+                                return
 
                             # --- COMMAND DISPATCH ---
                             if cmd == "terminate":
@@ -6370,6 +6440,7 @@ def action_loop(workstation_id: str) -> None:
     """Fallback HTTP polling for C2 commands. Primary dispatch is via Realtime WebSocket."""
     _name_current_thread("action")
     while True:
+        workstation_id = resolve_offline_wid(workstation_id)
         try:
             if sb is None:
                 time.sleep(10)
@@ -6436,6 +6507,12 @@ def action_loop(workstation_id: str) -> None:
                     # show success while nothing happened on the machine.
                     dispatched = True
                     fail_reason = None
+
+                    authorized, authorization_reason = authorize_admin_action(workstation_id, cmd, meta)
+                    if not authorized:
+                        sb.table("admin_actions").update({"status": "failed"}).eq("id", action["id"]).execute()
+                        logger.warning("Unauthorized admin action rejected", component="authz", command=cmd, action_id=action["id"], reason=authorization_reason)
+                        continue
 
                     if cmd == "terminate":
                         threading.Thread(target=controlled_shutdown, args=(workstation_id, action["id"]), daemon=True).start()
@@ -6968,6 +7045,79 @@ if __name__ == "__main__":
     # Any argument at all means something is still invoking the old CLI
     # surface — fail loudly and point at the real thing rather than
     # reviving dead argparse code or silently doing nothing.
+    if len(sys.argv) > 1 and sys.argv[1] == "--warmup":
+        # ---------------------------------------------------------------
+        # First-start preparation mode.
+        #
+        # Contract: initialize every expensive runtime component that
+        # would otherwise delay the very first normal boot, then drop
+        # warmup.lock ONLY after all required work succeeds.
+        #
+        # This must NOT start monitoring, enforcement, telemetry, or
+        # any persistent background service.  It is purely a local
+        # runtime initialization pass.
+        # ---------------------------------------------------------------
+        _warmup_state = {"ok": True, "errors": []}
+
+        def _warmup_step(label, fn):
+            try:
+                fn()
+                print(f"  [OK] {label}")
+            except Exception as _e:
+                _warmup_state["ok"] = False
+                _warmup_state["errors"].append(f"{label}: {_e}")
+                print(f"  [FAIL] {label}: {_e}")
+
+        print("Obylon first-start preparation")
+        print("=" * 40)
+
+        # 1. OCR stack (PIL + pytesseract + tesseract binary path)
+        _warmup_step("OCR libraries (PIL + pytesseract)", _ensure_ocr_libs)
+
+        # 2. Keyboard hook library
+        _warmup_step("Input hook (pynput)", lambda: __import__("pynput"))
+
+        # 3. WebSocket transport
+        _warmup_step("WebSocket transport", lambda: __import__("websockets"))
+
+        # 4. Crypto signing (optional — not required for warmup success)
+        try:
+            import nacl.signing  # noqa: F401
+            print("  [OK] Crypto signing (nacl)")
+        except ImportError:
+            print("  [SKIP] Crypto signing (nacl) — optional")
+
+        # 5. Process monitoring
+        _warmup_step("Process monitoring (psutil)", lambda: __import__("psutil"))
+
+        # 6. TLS certificates
+        _warmup_step("TLS certificates (certifi)", lambda: __import__("certifi"))
+
+        # 7. Win32 APIs (COM, services)
+        _warmup_step("Win32 APIs", lambda: (__import__("win32event"), __import__("win32api")))
+
+        print("=" * 40)
+
+        exe_dir = os.path.dirname(sys.executable)
+        lock_path = os.path.join(exe_dir, "warmup.lock")
+
+        if _warmup_state["ok"]:
+            # Delete any stale lock before writing a fresh one
+            if os.path.exists(lock_path):
+                os.remove(lock_path)
+            with open(lock_path, "w") as _f:
+                _f.write(str(time.time()))
+            print(f"Warmup complete — lock written to {lock_path}")
+            sys.exit(0)
+        else:
+            # Do NOT create lock on failure — installer will see timeout
+            if os.path.exists(lock_path):
+                os.remove(lock_path)
+            print("Warmup FAILED — required components did not load:")
+            for _err in _warmup_state["errors"]:
+                print(f"  * {_err}")
+            sys.exit(1)
+
     if len(sys.argv) > 1:
         print("Obylon Sentinel Agent \u2014 this binary no longer has a CLI.")
         print("Use obylonc.exe instead: activate, status, diagnose, deactivate,")
@@ -7052,6 +7202,11 @@ if __name__ == "__main__":
         SUPABASE_KEY = vault.get("SUPABASE_ANON_KEY")
         
         # 3. Ignite the Supabase Engine FIRST to refresh tokens
+        # Load tokens from vault into globals BEFORE building the client,
+        # so _build_supabase_client() can set_session with them and so
+        # the license heartbeat has a valid Bearer token from the start.
+        ACCESS_TOKEN = vault.get("ACCESS_TOKEN")
+        REFRESH_TOKEN = vault.get("REFRESH_TOKEN")
         try:
             if not SUPABASE_URL or not SUPABASE_KEY:
                 raise ValueError("Credentials missing")
@@ -7063,10 +7218,13 @@ if __name__ == "__main__":
             except Exception:
                 session = sb.auth.get_session()
                 
-            if session and session.access_token != vault.get("ACCESS_TOKEN"):
-                vault._data["ACCESS_TOKEN"] = session.access_token
-                vault._data["REFRESH_TOKEN"] = session.refresh_token
+            if session and session.access_token:
+                ACCESS_TOKEN = session.access_token
+                REFRESH_TOKEN = session.refresh_token
+                vault._data["ACCESS_TOKEN"] = ACCESS_TOKEN
+                vault._data["REFRESH_TOKEN"] = REFRESH_TOKEN
                 vault._save()
+                logger.info("Session tokens refreshed at boot", component="boot")
         except Exception as e:
             logger.warning(f"Supabase offline mode. linkage failed: {e}", component="boot")
             sb = None
@@ -7109,7 +7267,7 @@ if __name__ == "__main__":
             req = urllib.request.Request(
                 f"{ENROLLMENT_ENDPOINT}/license_heartbeat",
                 data=json.dumps(payload).encode("utf-8"),
-                headers={"Authorization": f"Bearer {vault.get('ACCESS_TOKEN')}", "Content-Type": "application/json"}
+                headers={"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
             )
             ctx = ssl.create_default_context(cafile=certifi.where())
             with urllib.request.urlopen(req, context=ctx, timeout=5) as response:
@@ -7270,6 +7428,7 @@ if __name__ == "__main__":
                 input("\nPress Enter to exit...")
         except Exception:
             pass
+
 
 
 
