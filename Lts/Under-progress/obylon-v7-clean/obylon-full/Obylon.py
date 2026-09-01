@@ -4765,7 +4765,7 @@ class OcrEngine:
     never touches scan_loop.
     """
     MAX_IMAGE_DIM = 1920          # downscale bound — OCR accuracy is flat past this
-    def __init__(self, pending: int = 2, timeout: float = 8.0, result_ttl: float = 45.0):
+    def __init__(self, pending: int = 2, timeout: float = 15.0, result_ttl: float = 45.0):
         self._q: _queue_mod.Queue = _queue_mod.Queue(maxsize=pending)
         self._timeout = timeout
         self._ttl = result_ttl
@@ -6159,6 +6159,7 @@ def realtime_c2_listener(workstation_id: str) -> None:
     import asyncio
 
     async def _run_realtime():
+        nonlocal workstation_id
         from realtime import AsyncRealtimeClient
 
         ws_url = SUPABASE_URL.replace("https://", "wss://").replace("http://", "ws://") + "/realtime/v1/websocket"
