@@ -237,6 +237,15 @@ func runStatus(args []string) int {
 	lines = append(lines, "")
 	lines = append(lines, fmt.Sprintf("%-16s%s", "Node ID:", ui.Dim(v.Get("NODE_ID"))))
 	lines = append(lines, fmt.Sprintf("%-16sv%s", "Agent Version:", Version))
+	if authToken := v.Get("AUTHZ_ACCESS_TOKEN"); authToken != "" {
+		authState := "active"
+		if expiry, err := parseISO(v.Get("AUTHZ_EXPIRES_AT")); err == nil && time.Now().After(expiry) {
+			authState = "expired"
+		}
+		lines = append(lines, fmt.Sprintf("%-16s%s", "Umbraxis Auth:", strings.ToUpper(authState)))
+		lines = append(lines, fmt.Sprintf("%-16s%s", "Auth Scopes:", ui.Dim(defaultString(v.Get("AUTHZ_SCOPES"), "none"))))
+		lines = append(lines, fmt.Sprintf("%-16s%s", "Auth Expires:", defaultString(v.Get("AUTHZ_EXPIRES_AT"), "unknown")))
+	}
 
 	ui.PrintBox("OBYLON SENTINEL STATUS", lines, ui.Blue)
 	return 0
@@ -354,6 +363,12 @@ func runDeactivate(args []string) int {
 		return 0
 	}
 
+	hwUUID, _ := identity.LoadOrCreateHardwareUUID()
+	target := map[string]interface{}{"hardware_uuid": hwUUID, "type": "device"}
+	if !requireCLIActionAuthorization("obylon.endpoint.deactivate", target) {
+		return 1
+	}
+
 	targets := []string{paths.IdentityFile(), paths.AliasFile(), paths.VaultFile(), paths.VaultDBFile()}
 	for _, p := range targets {
 		if _, err := os.Stat(p); err != nil {
@@ -384,6 +399,12 @@ func runResetIdentity(args []string) int {
 	}
 	if !*confirm {
 		ui.Error(`the --confirm flag is required — this wipes machine identity for image capture`)
+		return 1
+	}
+
+	hwUUID, _ := identity.LoadOrCreateHardwareUUID()
+	target := map[string]interface{}{"hardware_uuid": hwUUID, "type": "device"}
+	if !requireCLIActionAuthorization("obylon.identity.reset", target) {
 		return 1
 	}
 

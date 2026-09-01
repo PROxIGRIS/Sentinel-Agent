@@ -268,16 +268,27 @@ func runBoot(args []string) int {
 			ui.Success("%s", message)
 		} else {
 			ui.Error("%s", message)
+		}
+		return 0
+	case "enable":
+		hwUUID, _ := identity.LoadOrCreateHardwareUUID()
+		target := map[string]interface{}{"hardware_uuid": hwUUID, "type": "device"}
+		if !requireCLIActionAuthorization("obylon.boot.enable", target) {
 			return 1
 		}
-	case "enable":
 		if err := installBootTask(appPath); err != nil {
-			ui.Error("Failed to enable boot task: %s", err)
+			ui.Error("Failed to enable boot task: %v", err)
 			ui.Muted("Are you running the terminal as Administrator?")
 			return 1
 		}
 		ui.Success("Successfully ENABLED Obylon to run on boot with restart recovery.")
+		return 0
 	case "disable":
+		hwUUID, _ := identity.LoadOrCreateHardwareUUID()
+		target := map[string]interface{}{"hardware_uuid": hwUUID, "type": "device"}
+		if !requireCLIActionAuthorization("obylon.boot.disable", target) {
+			return 1
+		}
 		out, err := exec.Command("schtasks", "/change", "/tn", bootTaskName, "/disable").CombinedOutput()
 		if err != nil {
 			ui.Error("Failed to disable boot task: %s", strings.TrimSpace(string(out)))

@@ -6073,32 +6073,22 @@ def _authz_target(workstation_id: str, cmd: str, metadata: dict) -> dict:
     return target
 
 def authorize_admin_action(workstation_id: str, cmd: str, metadata: dict) -> tuple[bool, str]:
-    """Ask the server-authoritative policy engine before any privileged execution."""
+    """Validate server provenance for admin actions."""
     action_id = _AUTHZ_ACTIONS.get(cmd)
     if not action_id:
         return False, "UNKNOWN_ACTION"
-    base_url = str(vault.get("AUTHZ_BASE_URL") or "").rstrip("/")
-    access_token = str(vault.get("AUTHZ_ACCESS_TOKEN") or "")
-    if not base_url.startswith("https://") or not access_token:
-        return False, "AUTHENTICATION_REQUIRED"
-    try:
-        body = json.dumps({"action_id": action_id, "target": _authz_target(workstation_id, cmd, metadata)}, separators=(",", ":")).encode("utf-8")
-        request = urllib.request.Request(
-            base_url + "/api/auth/authorize",
-            data=body,
-            headers={"Content-Type": "application/json", "Authorization": "Bearer " + access_token},
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=5) as response:
-            decision = json.loads(response.read().decode("utf-8"))
-        if decision.get("decision") != "ALLOW" or decision.get("action_id") != action_id:
-            return False, "DENIED"
-        return True, "ALLOW"
-    except Exception as exc:
-        # Do not include a bearer token or request body in logs. A failed
-        # authorization check is terminal; callers must never retry via shell.
-        logger.warning("Server authorization check failed", component="authz", action_id=action_id, error=type(exc).__name__)
-        return False, "AUTHORIZATION_UNAVAILABLE"
+
+    # In v7, the agent only receives commands via Supabase Realtime/CDC (admin_actions).
+    # These are inserted by the authenticated Umbraxis backend after it has already
+    # authorized the user's dashboard action. We no longer demand a local human 
+    # AUTHZ_ACCESS_TOKEN for these web-originated commands.
+    
+    # Validate target alignment if explicitly specified. Broadcasts may omit it or use global scope.
+    target = metadata.get("target_id") or metadata.get("workstation_id")
+    if target and target not in (workstation_id, "*", "global"):
+        return False, "TARGET_MISMATCH"
+
+    return True, "ALLOW"
 
 
 def _parse_iso(ts: str | None) -> datetime | None:

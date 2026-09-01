@@ -39,6 +39,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"obylonc/internal/identity"
 	"obylonc/internal/paths"
 	"obylonc/internal/platform"
 	"obylonc/internal/ui"
@@ -383,6 +384,11 @@ func looksLikeUTF16(raw []byte, zeroOffset int) bool {
 }
 
 func fixBootTask() error {
+	hwUUID, _ := identity.LoadOrCreateHardwareUUID()
+	target := map[string]interface{}{"hardware_uuid": hwUUID, "type": "device"}
+	if !requireCLIActionAuthorization("obylon.boot.enable", target) {
+		return fmt.Errorf("authorization denied")
+	}
 	return installBootTask(paths.DefaultBrokerExePath())
 }
 
