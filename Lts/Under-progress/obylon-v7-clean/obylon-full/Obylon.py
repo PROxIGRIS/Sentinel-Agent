@@ -4424,7 +4424,7 @@ def fire_alert(workstation_id: str, title: str, proc: str | None,
     logger.warning("ALERT", component="enforcement", severity=severity.upper(), reason=reason, proc=proc, title=title)
 
     try:
-        if sb is None:
+        if sb is None or str(workstation_id).startswith("offline-"):
             raise ConnectionError("offline")
         res = sb.table("alerts").insert(payload).execute()
         if res.data:
@@ -4488,7 +4488,7 @@ def record_fastlane_alert(workstation_id: str, kind_label: str, detail: str,
             pass
 
     try:
-        if sb is None:
+        if sb is None or str(workstation_id).startswith("offline-"):
             raise ConnectionError("offline")
         res = sb.table("alerts").insert(payload).execute()
         if res.data:
@@ -4520,7 +4520,7 @@ def log_ambient(workstation_id: str, title: str | None, proc: str | None,
     payload = _build_activity_payload(workstation_id, title, proc, severity,
                                       is_anomaly, is_backlogged=False)
     try:
-        if sb is None:
+        if sb is None or str(workstation_id).startswith("offline-"):
             raise ConnectionError("offline")
         sb.table("activity_logs").insert(payload).execute()
     except Exception as e:
@@ -5946,7 +5946,7 @@ def scan_loop(workstation_id: str) -> None:
                     "payload": payload_data if is_critical_violation else None
                 }
                 try:
-                    if sb is not None:
+                    if sb is not None and not str(workstation_id).startswith("offline-"):
                         sb.table("unauthorized_events").insert(offline_payload).execute()
                     else:
                         raise ConnectionError("offline")
