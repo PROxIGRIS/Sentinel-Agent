@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -50,9 +51,15 @@ func runLogin(args []string) int {
 		return 1
 	}
 
-	fmt.Printf("\n%s\n\n", ui.Green("Please open the following URL in your browser to authorize this CLI:"))
+	fmt.Printf("\n%s\n\n", ui.Green("Please authorize this CLI in your browser."))
 	fmt.Printf("  %s\n\n", ui.Bold(verificationURIComplete))
 	
+	// Automatically launch the browser on Windows
+	if err := exec.Command("rundll32", "url.dll,FileProtocolHandler", verificationURIComplete).Start(); err != nil {
+		// Fallback if rundll32 fails
+		_ = exec.Command("cmd", "/c", "start", "", verificationURIComplete).Start()
+	}
+
 	fmt.Printf("%s\n\n", ui.Dim("Waiting for authorization..."))
 
 	// 2. Poll for exchange
