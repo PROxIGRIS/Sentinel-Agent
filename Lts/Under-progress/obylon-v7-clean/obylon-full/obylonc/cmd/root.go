@@ -93,6 +93,7 @@ type commandEntry struct {
 
 var commands = map[string]commandEntry{
 	"activate":       {runActivate, "Activate this workstation with a license key"},
+	"login":          {runLogin, "Authenticate the CLI via browser (Device Code)"},
 	"status":         {runStatus, "Print human-readable license status"},
 	"diagnose":       {runDiagnose, "Run connectivity and authentication checks"},
 	"doctor":         {runDoctor, "Health check, CPU profile (--profile), or auto-repair (--fix)"},

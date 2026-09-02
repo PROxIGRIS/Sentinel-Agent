@@ -50,7 +50,7 @@ type ActivateRequest struct {
 // branch on statusCode themselves, mirroring how Obylon.py distinguishes
 // urllib.error.HTTPError (has a status+body) from urllib.error.URLError
 // (no response at all).
-func (c *Client) postJSON(url string, headers map[string]string, payload interface{}) (statusCode int, parsed map[string]interface{}, raw []byte, err error) {
+func (c *Client) PostJSON(url string, headers map[string]string, payload interface{}) (statusCode int, parsed map[string]interface{}, raw []byte, err error) {
 	var bodyReader io.Reader
 	if payload != nil {
 		b, mErr := json.Marshal(payload)
@@ -87,7 +87,7 @@ func (c *Client) Activate(req ActivateRequest) (statusCode int, parsed map[strin
 		"apikey":        ObylonAnonKey,
 		"Authorization": "Bearer " + ObylonAnonKey,
 	}
-	return c.postJSON(EnrollmentEndpoint+"/activate", headers, req)
+	return c.PostJSON(EnrollmentEndpoint+"/activate", headers, req)
 }
 
 // Heartbeat calls POST {EnrollmentEndpoint}/license_heartbeat with the
@@ -95,7 +95,7 @@ func (c *Client) Activate(req ActivateRequest) (statusCode int, parsed map[strin
 func (c *Client) Heartbeat(accessToken, hardwareUUID string) (statusCode int, parsed map[string]interface{}, raw []byte, err error) {
 	headers := map[string]string{"Authorization": "Bearer " + accessToken}
 	payload := map[string]string{"hardware_uuid": hardwareUUID}
-	return c.postJSON(EnrollmentEndpoint+"/license_heartbeat", headers, payload)
+	return c.PostJSON(EnrollmentEndpoint+"/license_heartbeat", headers, payload)
 }
 
 // ErrorType extracts the {"error": "..."} discriminator the Obylon edge
