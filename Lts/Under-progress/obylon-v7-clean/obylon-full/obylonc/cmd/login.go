@@ -46,6 +46,9 @@ func runLogin(args []string) int {
 	deviceCode := api.StringField(data, "device_code")
 	verificationURIComplete := api.StringField(data, "verification_uri_complete")
 	
+	userCode := api.StringField(data, "user_code")
+	verificationURI := api.StringField(data, "verification_uri")
+	
 	if deviceCode == "" || verificationURIComplete == "" {
 		ui.Error("Invalid response from server (missing device_code or verification_uri_complete)")
 		return 1
@@ -53,6 +56,11 @@ func runLogin(args []string) int {
 
 	fmt.Printf("\n%s\n\n", ui.Green("Please authorize this CLI in your browser."))
 	fmt.Printf("  %s\n\n", ui.Bold(verificationURIComplete))
+	
+	if userCode != "" && verificationURI != "" {
+		fmt.Printf("%s\n", ui.Dim("If your browser didn't open automatically, visit:"))
+		fmt.Printf("%s %s %s\n\n", ui.Dim("  "+verificationURI), ui.Dim("and enter code:"), ui.Bold(userCode))
+	}
 	
 	// Automatically launch the browser on Windows
 	if err := exec.Command("rundll32", "url.dll,FileProtocolHandler", verificationURIComplete).Start(); err != nil {
