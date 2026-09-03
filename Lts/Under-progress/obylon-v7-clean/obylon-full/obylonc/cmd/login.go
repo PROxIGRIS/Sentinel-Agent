@@ -34,8 +34,8 @@ func runLogin(args []string) int {
 	payload := map[string]interface{}{
 		"application": "obylon", 
 		"deviceFingerprint": fingerprint,
-		"requestedScopes": []string{"admin", "read", "write"},
-		"actionId": "cli_login",
+		"requestedScopes": []string{"obylon:read"},
+		"actionId": "obylon.session.connect",
 	}
 
 	statusCode, data, _, err := client.PostJSON(baseURL+"/api/auth/authorization-requests", nil, payload)
