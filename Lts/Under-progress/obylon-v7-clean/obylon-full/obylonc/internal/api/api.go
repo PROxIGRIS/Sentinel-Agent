@@ -66,6 +66,7 @@ func (c *Client) PostJSON(url string, headers map[string]string, payload interfa
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

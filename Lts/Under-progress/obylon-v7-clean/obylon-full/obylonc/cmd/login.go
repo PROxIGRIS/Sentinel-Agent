@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"obylonc/internal/api"
+	"obylonc/internal/platform"
 	"obylonc/internal/ui"
 	"obylonc/internal/vault"
 )
@@ -26,10 +27,15 @@ func runLogin(args []string) int {
 	sp := ui.NewSpinner("Initiating device authorization...")
 	sp.Start()
 
+	fingerprint, reliable := platform.HardwareFingerprintWithStatus()
+	if !reliable {
+		fingerprint = "unknown-device-fallback"
+	}
 	payload := map[string]interface{}{
-		"application_id": "app_cli_0000000000000", 
-		"requested_scopes": []string{"admin", "read", "write"},
-		"action_id": "cli_login",
+		"application": "obylon", 
+		"deviceFingerprint": fingerprint,
+		"requestedScopes": []string{"admin", "read", "write"},
+		"actionId": "cli_login",
 	}
 
 	statusCode, data, _, err := client.PostJSON(baseURL+"/api/auth/authorization-requests", nil, payload)
