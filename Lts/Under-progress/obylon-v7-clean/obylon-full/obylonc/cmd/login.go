@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"flag"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -15,6 +16,10 @@ import (
 func runLogin(args []string) int {
 	fs, _, _ := newFlagSet("login")
 	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			printLoginHelp()
+			return 0
+		}
 		return usageErr("login", err.Error())
 	}
 
