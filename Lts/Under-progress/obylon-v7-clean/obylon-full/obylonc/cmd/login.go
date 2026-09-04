@@ -43,6 +43,16 @@ func runLogin(args []string) int {
 		return 0
 	}
 
+	vLocal := vault.New()
+	vLocal.Load()
+	if token := vLocal.Get("AUTHZ_ACCESS_TOKEN"); token != "" {
+		if expiry, err := parseISO(vLocal.Get("AUTHZ_EXPIRES_AT")); err == nil && time.Now().Before(expiry) {
+			ui.Warn("You are already logged in.")
+			ui.Muted("To log in as a different user, run: obylonc login logout")
+			return 0
+		}
+	}
+
 	ui.PrintBanner("O B Y L O N   L O G I N")
 
 	client := api.NewClient(10 * time.Second)
@@ -59,7 +69,7 @@ func runLogin(args []string) int {
 	payload := map[string]interface{}{
 		"application": "obylon", 
 		"deviceFingerprint": fingerprint,
-		"requestedScopes": []string{"obylon:read"},
+		"requestedScopes": []string{"obylon:read", "obylon:update", "obylon:admin"},
 		"actionId": "obylon.session.connect",
 	}
 
