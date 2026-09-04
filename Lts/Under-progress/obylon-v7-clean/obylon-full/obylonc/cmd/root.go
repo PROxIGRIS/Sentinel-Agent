@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
+	
 
 	"obylonc/internal/platform"
 	"obylonc/internal/ui"
@@ -146,38 +146,11 @@ func printHelp() {
 	ui.PrintBanner("S E N T I N E L   C L I")
 	fmt.Println(ui.Bold("Usage:") + " obylonc <command> [options]")
 	fmt.Println()
-	fmt.Println(ui.Bold("Commands:"))
-
-	width := 0
-	names := make([]string, 0, len(commandOrder))
-	for _, name := range commandOrder {
-		if _, ok := commands[name]; ok {
-			names = append(names, name)
-			if len(name) > width {
-				width = len(name)
-			}
-		}
-	}
-	// Anything registered but missing from commandOrder still shows up,
-	// sorted, so a future command is never silently hidden from --help.
-	seen := map[string]bool{}
-	for _, n := range names {
-		seen[n] = true
-	}
-	var extra []string
-	for name := range commands {
-		if !seen[name] {
-			extra = append(extra, name)
-		}
-	}
-	sort.Strings(extra)
-	names = append(names, extra...)
-
-	for _, name := range names {
-		entry := commands[name]
-		fmt.Printf("  %s%s  %s\n", ui.Cyan(name), pad(name, width), ui.Dim(entry.brief))
-	}
-
+	
+	printCategory("Public Info & Auth", []string{"login", "status", "version"})
+	printCategory("Helper Diagnostics", []string{"diagnose", "doctor", "logs", "ai", "support-bundle"})
+	printCategory("Admin Actions", []string{"activate", "boot", "deactivate", "reset-identity"})
+	
 	fmt.Println()
 	fmt.Println(ui.Bold("Global flags:"))
 	fmt.Println("  --dev              enable developer mode (verbose errors, raw payloads)")
@@ -186,10 +159,22 @@ func printHelp() {
 	fmt.Println("  -h, --help         show this help")
 	fmt.Println()
 	fmt.Println(ui.Bold("Examples:"))
+	fmt.Println(ui.Dim("  obylonc login"))
 	fmt.Println(ui.Dim("  obylonc activate OBY-XXXX-XXXX"))
 	fmt.Println(ui.Dim("  obylonc diagnose --dev"))
 	fmt.Println(ui.Dim("  obylonc logs -f --level warning"))
 	fmt.Println(ui.Dim(`  obylonc ai "how do I deploy to a whole lab?"`))
+	fmt.Println()
+}
+
+func printCategory(title string, cmds []string) {
+	fmt.Println(ui.Bold(title + ":"))
+	for _, name := range cmds {
+		cmd, ok := commands[name]
+		if ok && cmd.brief != "" {
+			fmt.Printf("  %-16s%s\n", name, cmd.brief)
+		}
+	}
 	fmt.Println()
 }
 

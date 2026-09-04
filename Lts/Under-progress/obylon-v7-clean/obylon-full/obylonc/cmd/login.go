@@ -18,6 +18,26 @@ func runLogin(args []string) int {
 		return usageErr("login", err.Error())
 	}
 
+	positionals := fs.Args()
+	if len(positionals) > 0 {
+		switch positionals[0] {
+		case "status":
+			return runLoginStatus()
+		case "logout":
+			return runLoginLogout()
+		case "help":
+			printLoginHelp()
+			return 0
+		default:
+			return usageErr("login", fmt.Sprintf("unknown subcommand %q. Available: status, logout", positionals[0]))
+		}
+	}
+
+	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") {
+		printLoginHelp()
+		return 0
+	}
+
 	ui.PrintBanner("O B Y L O N   L O G I N")
 
 	client := api.NewClient(10 * time.Second)
@@ -131,4 +151,68 @@ func runLogin(args []string) int {
 			}
 		}
 	}
+}
+func runLoginStatus() int {
+	v := vault.New()
+	if _, err := v.Load(); err != nil {
+		ui.Error("Vault error: %v", err)
+		return 1
+	}
+	
+	token := v.Get("AUTHZ_ACCESS_TOKEN")
+	if token == "" {
+		ui.Warn("Not logged in. Run 'obylonc login' to authenticate.")
+		return 0
+	}
+	
+	if expiry, err := parseISO(v.Get("AUTHZ_EXPIRES_AT")); err == nil && time.Now().After(expiry) {
+		ui.Warn("Session expired on %s. Run 'obylonc login' to re-authenticate.", expiry.Local().Format(time.RFC1123))
+		return 0
+	}
+	
+	ui.Success("Logged in and active.")
+	ui.KV("Access Token", "Present")
+	ui.KV("Expires", v.Get("AUTHZ_EXPIRES_AT"))
+	return 0
+}
+
+func runLoginLogout() int {
+	v := vault.New()
+	if _, err := v.Load(); err != nil {
+		ui.Error("Vault error: %v", err)
+		return 1
+	}
+	
+	if v.Get("AUTHZ_ACCESS_TOKEN") == "" {
+		ui.Warn("Not currently logged in.")
+		return 0
+	}
+	
+	v.Delete("AUTHZ_ACCESS_TOKEN")
+	v.Delete("AUTHZ_REFRESH_TOKEN")
+	v.Delete("AUTHZ_EXPIRES_AT")
+	
+	if err := v.Save(); err != nil {
+		ui.Error("Failed to clear session: %v", err)
+		return 1
+	}
+	
+	ui.Success("Logged out successfully.")
+	return 0
+}
+
+func printLoginHelp() {
+	fmt.Println(ui.Bold("obylonc login"))
+	fmt.Println("Authenticate the CLI via browser (Device Code)")
+	fmt.Println()
+	fmt.Println(ui.Bold("Usage:"))
+	fmt.Println("  obylonc login [command]")
+	fmt.Println()
+	fmt.Println(ui.Bold("Available Commands:"))
+	fmt.Println("  status      Check current CLI login status")
+	fmt.Println("  logout      Clear the current CLI session")
+	fmt.Println()
+	fmt.Println(ui.Bold("Examples:"))
+	fmt.Println(ui.Dim("  obylonc login"))
+	fmt.Println(ui.Dim("  obylonc login status"))
 }
