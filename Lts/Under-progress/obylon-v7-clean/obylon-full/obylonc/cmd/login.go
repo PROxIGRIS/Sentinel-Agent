@@ -99,11 +99,14 @@ func runLogin(args []string) int {
 		
 		if status == 200 {
 			token := api.StringField(exData, "access_token")
+			refreshToken := api.StringField(exData, "refresh_token")
+			expiresAt := api.StringField(exData, "expires_at")
 			
 			v := vault.New()
 			_, _ = v.Load()
-			v.Set("ACCESS_TOKEN", token)
-			v.Set("LICENSE_STATUS", "active")
+			v.Set("AUTHZ_ACCESS_TOKEN", token)
+			v.Set("AUTHZ_REFRESH_TOKEN", refreshToken)
+			v.Set("AUTHZ_EXPIRES_AT", expiresAt)
 			if err := v.Save(); err != nil {
 				ui.Error("Failed to save credentials to vault: %v", err)
 				return 1
