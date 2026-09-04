@@ -74,7 +74,10 @@ func authServer(flagValue string, v *vault.Vault) string {
 	if value := strings.TrimSpace(os.Getenv("UMBRAxis_AUTHZ_URL")); value != "" {
 		return value
 	}
-	return strings.TrimSpace(v.Get("AUTHZ_BASE_URL"))
+	if val := strings.TrimSpace(v.Get("AUTHZ_BASE_URL")); val != "" {
+		return val
+	}
+	return "https://umbraxis.tclservice.in"
 }
 
 func runAuthLogin(args []string, defaultAction string, forceAction bool) int {
@@ -321,11 +324,11 @@ func requireCLIActionAuthorization(actionID string, target map[string]interface{
 	}
 	accessToken := v.Get("AUTHZ_ACCESS_TOKEN")
 	if accessToken == "" {
-		ui.Error("AUTHENTICATION_REQUIRED: No authorization credential is stored. Run 'obylonc auth login' first.")
+		ui.Error("AUTHENTICATION_REQUIRED: No authorization credential is stored. Run 'obylonc login' first.")
 		return false
 	}
 	if expiry, err := parseISO(v.Get("AUTHZ_EXPIRES_AT")); err == nil && time.Now().After(expiry) {
-		ui.Error("AUTHENTICATION_REQUIRED: Authorization credential expired. Run 'obylonc auth login' again.")
+		ui.Error("AUTHENTICATION_REQUIRED: Authorization credential expired. Run 'obylonc login' again.")
 		return false
 	}
 	client, err := authz.NewClient(authServer("", v))
