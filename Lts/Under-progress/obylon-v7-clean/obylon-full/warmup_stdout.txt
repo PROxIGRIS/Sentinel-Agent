@@ -1,0 +1,12 @@
+Obylon first-start preparation
+========================================
+[90m[09:17:52.212][0m [91m✖[0m [91m[identity][0m [97mhardware fingerprint helper is missing[0m [90mpath=[37mC:\Sentinel-Agent\Lts\Under-progress\obylon-v7-clean\obylon-full\dist\obylon\obylonc.exe
+  [OK] OCR libraries (PIL + pytesseract)
+  [OK] Input hook (pynput)
+  [OK] WebSocket transport
+  [OK] Crypto signing (nacl)
+  [OK] Process monitoring (psutil)
+  [OK] TLS certificates (certifi)
+  [OK] Win32 APIs
+========================================
+Warmup complete — lock written to C:\Sentinel-Agent\Lts\Under-progress\obylon-v7-clean\obylon-full\dist\obylon\warmup.lock

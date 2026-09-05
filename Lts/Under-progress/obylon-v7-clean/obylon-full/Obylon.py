@@ -148,6 +148,260 @@ import random
 import re
 import socket
 import sqlite3
+from enum import Enum, auto
+
+# --- PHASE 1: OBSERVABILITY STATE TRACKING ---
+class NetworkState(Enum):
+    OFFLINE = auto()
+    ONLINE = auto()
+
+class AuthState(Enum):
+    UNINITIALIZED = auto()
+    AUTHENTICATED = auto()
+    REFRESHING = auto()
+    AUTH_REQUIRED = auto()
+    AUTH_FAILED = auto()
+    AUTH_TERMINAL = auto()
+
+class ClientState(Enum):
+    ABSENT = auto()
+    CREATING = auto()
+    READY = auto()
+    INVALID = auto()
+    FAILED = auto()
+
+class LicenseState(Enum):
+    UNKNOWN = auto()
+    VALID = auto()
+    CHECKING = auto()
+    TEMPORARILY_UNAVAILABLE = auto()
+    UNAUTHORIZED = auto()
+    REVOKED = auto()
+    SUSPENDED = auto()
+    EXPIRED = auto()
+
+class SyncState(Enum):
+    IDLE = auto()
+    BLOCKED_BY_NETWORK = auto()
+    BLOCKED_BY_AUTH = auto()
+    BLOCKED_BY_CLIENT = auto()
+    FLUSHING = auto()
+    DEGRADED = auto()
+
+class SecurityState(Enum):
+    UNKNOWN = auto()
+    READY = auto()
+    BLOCKED = auto()
+    CORRUPT = auto()
+    IDENTITY_MISMATCH = auto()
+
+class SystemStateTracker:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.network = NetworkState.OFFLINE
+        self.auth = AuthState.UNINITIALIZED
+        self.client = ClientState.ABSENT
+        self.license = LicenseState.UNKNOWN
+        self.sync = SyncState.IDLE
+        self.security = SecurityState.UNKNOWN
+        self.session_generation = 0
+    
+    def _log_transition(self, component: str, old_state: Enum, new_state: Enum, reason: str, operation: str, attempt: int = 1, queue_depth: int = 0, next_action: str = ""):
+        if old_state == new_state:
+            return
+        try:
+            logger.info(
+                f"{component} state changed {old_state.name} -> {new_state.name}",
+                component="telemetry",
+                sub_component=component,
+                previous_state=old_state.name,
+                new_state=new_state.name,
+                reason=reason,
+                operation=operation,
+                attempt=attempt,
+                session_generation=self.session_generation,
+                queue_depth=queue_depth,
+                next_action=next_action
+            )
+        except NameError:
+            pass # logger not initialized yet
+
+    def update_network(self, state: NetworkState, reason: str, op: str, next_act: str=""):
+        with self.lock:
+            old, self.network = self.network, state
+            self._log_transition("network_state", old, state, reason, op, next_action=next_act)
+
+    def update_auth(self, state: AuthState, reason: str, op: str, next_act: str=""):
+        with self.lock:
+            old, self.auth = self.auth, state
+            self._log_transition("auth_state", old, state, reason, op, next_action=next_act)
+
+    def update_client(self, state: ClientState, reason: str, op: str, next_act: str=""):
+        with self.lock:
+            old, self.client = self.client, state
+            self._log_transition("client_state", old, state, reason, op, next_action=next_act)
+
+    def update_license(self, state: LicenseState, reason: str, op: str, next_act: str=""):
+        with self.lock:
+            old, self.license = self.license, state
+            self._log_transition("license_state", old, state, reason, op, next_action=next_act)
+
+    def update_sync(self, state: SyncState, reason: str, op: str, q_depth: int=0, next_act: str=""):
+        with self.lock:
+            old, self.sync = self.sync, state
+            self._log_transition("sync_state", old, state, reason, op, queue_depth=q_depth, next_action=next_act)
+
+    def update_security(self, state: SecurityState, reason: str, op: str, next_act: str=""):
+        with self.lock:
+            old, self.security = self.security, state
+            self._log_transition("security_state", old, state, reason, op, next_action=next_act)
+
+    def bump_generation(self):
+        with self.lock:
+            self.session_generation += 1
+
+    def is_ready_for_sync(self) -> bool:
+        """PHASE 3 FIX: Enforce comprehensive dependency chain before allowing sync."""
+        with self.lock:
+            return (
+                self.network == NetworkState.ONLINE and
+                self.auth == AuthState.AUTHENTICATED and
+                self.client == ClientState.READY and
+                self.license == LicenseState.VALID
+            )
+
+sys_state = SystemStateTracker()
+
+class SessionManager:
+    """PHASE 2: Authoritative Session Lifecycle Owner"""
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._client = None
+        self._access_token = None
+        self._refresh_token = None
+    
+    def _is_valid_jwt(self, token: str) -> bool:
+        if not token:
+            return False
+        # A valid Supabase JWT must have exactly two dots (Header.Payload.Signature)
+        return len(token.split(".")) == 3
+
+    def get_client(self):
+        """Returns the current authenticated client, or None if not ready."""
+        with self._lock:
+            return self._client
+            
+    def get_tokens(self):
+        with self._lock:
+            return self._access_token, self._refresh_token
+
+    def initialize_from_vault(self):
+        with self._lock:
+            sys_state.update_client(ClientState.CREATING, "Initializing from vault", "session_mgr")
+            self._access_token = vault.get("ACCESS_TOKEN")
+            self._refresh_token = vault.get("REFRESH_TOKEN")
+            
+            # PHASE 2 FIX: Validate JWT structure BEFORE passing to Supabase SDK
+            # This prevents the `list index out of range` crash caused by the 32-char CLI token.
+            if self._access_token and not self._is_valid_jwt(self._access_token):
+                logger.critical("Vault ACCESS_TOKEN is not a valid JWT (likely poisoned by CLI). Purging auth state.", component="auth")
+                self.invalidate_session()
+                sys_state.update_auth(AuthState.AUTH_TERMINAL, "Corrupted vault token", "session_mgr")
+                sys_state.update_security(SecurityState.CORRUPT, "Vault token poisoned", "session_mgr")
+                return False
+                
+            try:
+                # School Supabase endpoints have standard Let's Encrypt certificates.
+                client = create_client(
+                    SUPABASE_URL, SUPABASE_KEY,
+                    options=ClientOptions(httpx_client=httpx.Client(verify=certifi.where(), timeout=30.0), auto_refresh_token=True, persist_session=False)
+                )
+                
+                if self._access_token and self._refresh_token:
+                    sys_state.update_auth(AuthState.REFRESHING, "Setting local token", "session_mgr")
+                    client.auth.set_session(self._access_token, self._refresh_token)
+                    
+                    # Force a refresh to ensure it's still valid
+                    session = client.auth.get_session()
+                    if session and hasattr(session, 'session') and session.session is not None:
+                        session = session.session
+                    if session and hasattr(session, 'access_token') and session.access_token != self._access_token:
+                        self._access_token = session.access_token
+                        self._refresh_token = session.refresh_token
+                        vault._data["ACCESS_TOKEN"] = self._access_token
+                        vault._data["REFRESH_TOKEN"] = self._refresh_token
+                        vault._save()
+                        
+                    self._client = client
+                    sys_state.update_auth(AuthState.AUTHENTICATED, "Session restored", "session_mgr")
+                    sys_state.update_client(ClientState.READY, "Client authenticated", "session_mgr")
+                    sys_state.bump_generation()
+                    return True
+                else:
+                    self._client = client
+                    sys_state.update_auth(AuthState.UNINITIALIZED, "No tokens in vault", "session_mgr")
+                    sys_state.update_client(ClientState.READY, "Anonymous client ready", "session_mgr")
+                    return False
+                    
+            except Exception as e:
+                self._client = None
+                err_str = str(e)
+                if "401" in err_str or "unauthorized" in err_str.lower() or "expired" in err_str.lower():
+                    sys_state.update_auth(AuthState.AUTH_FAILED, "Token expired or rejected", "session_mgr")
+                else:
+                    sys_state.update_auth(AuthState.AUTH_FAILED, f"Init failed: {e}", "session_mgr")
+                sys_state.update_client(ClientState.FAILED, "Auth failed during client init", "session_mgr")
+                logger.error("Client init failed", component="auth", error=err_str, exc_info=True)
+                return False
+
+    def force_refresh(self) -> bool:
+        """Single-flight refresh invoked by heartbeat or when 401s are detected."""
+        with self._lock:
+            if not self._client:
+                return False
+                
+            sys_state.update_auth(AuthState.REFRESHING, "Forcing active refresh", "session_mgr")
+            try:
+                session = self._client.auth.refresh_session()
+            except Exception as e:
+                logger.debug(f"Refresh call failed (could be network or expired): {e}", component="auth")
+                session = self._client.auth.get_session()
+                
+            if session:
+                if hasattr(session, 'session') and session.session is not None:
+                    session = session.session
+                if hasattr(session, 'access_token') and session.access_token != self._access_token:
+                    self._access_token = session.access_token
+                    self._refresh_token = session.refresh_token
+                    vault._data["ACCESS_TOKEN"] = self._access_token
+                    vault._data["REFRESH_TOKEN"] = self._refresh_token
+                    vault._save()
+                    TOKEN_ROTATED_EVENT.set()
+                    sys_state.bump_generation()
+                    logger.info("Session token rotated successfully", component="auth")
+                sys_state.update_auth(AuthState.AUTHENTICATED, "Session refreshed", "session_mgr")
+                return True
+            else:
+                sys_state.update_auth(AuthState.AUTH_FAILED, "Session is dead after refresh", "session_mgr")
+                self.invalidate_session()
+                return False
+
+    def invalidate_session(self):
+        """Purge corrupted or permanently dead sessions."""
+        with self._lock:
+            self._access_token = None
+            self._refresh_token = None
+            self._client = None
+            vault._data["ACCESS_TOKEN"] = None
+            vault._data["REFRESH_TOKEN"] = None
+            vault._save()
+            sys_state.update_auth(AuthState.UNINITIALIZED, "Session invalidated", "session_mgr")
+            sys_state.update_client(ClientState.ABSENT, "Client purged", "session_mgr")
+            sys_state.bump_generation()
+
+session_manager = SessionManager()
+
+
 import subprocess
 import threading
 import time
@@ -170,8 +424,6 @@ OBYLON_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIs
 # Session credentials — populated from DPAPI vault at boot, never hardcoded
 SUPABASE_URL = None
 SUPABASE_KEY = None  # Will hold the anon key after activation
-ACCESS_TOKEN = None
-REFRESH_TOKEN = None
 LICENSE_ID = None
 NODE_ID = None
 
@@ -394,8 +646,8 @@ def dying_breath_handler(exc_type, exc_value, exc_tb):
     crash_log = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
     logger.error("SYSTEM COLLAPSE DETECTED. Transmitting SOS...", component="system", crash_log=crash_log, exc_info=True)
     try:
-        if sb is not None:
-            sb.table("agent_health").insert({
+        if session_manager.get_client() is not None:
+            session_manager.get_client().table("agent_health").insert({
                 "workstation_id": socket.gethostname(),
                 "status": "FATAL_CRASH",
                 "error_log": crash_log,
@@ -663,30 +915,11 @@ class WorkstationGuard:
         return False
 
 WARDEN: WorkstationGuard = None  # Initialized at boot in __main__ to avoid wasted hooks
-sb: Client = None  # Will be initialized at runtime by the Vault
+# sb global removed in Phase 2  # Will be initialized at runtime by the Vault
 import threading
 TOKEN_ROTATED_EVENT = threading.Event()
 LICENSE_INVALID_EVENT = threading.Event()
-
-def _build_supabase_client():
-    global ACCESS_TOKEN, REFRESH_TOKEN
-    # School Supabase endpoints have standard Let's Encrypt certificates, so verify=certifi.where() is completely safe and required.
-    client = create_client(
-        SUPABASE_URL, SUPABASE_KEY,
-        options=ClientOptions(httpx_client=httpx.Client(verify=certifi.where(), timeout=30.0), auto_refresh_token=True, persist_session=False)
-    )
-    # Set the session from vault credentials
-    if ACCESS_TOKEN and REFRESH_TOKEN:
-        client.auth.set_session(ACCESS_TOKEN, REFRESH_TOKEN)
-        # Refresh if needed and update vault
-        session = client.auth.get_session()
-        if session and session.access_token != ACCESS_TOKEN:
-            ACCESS_TOKEN = session.access_token
-            REFRESH_TOKEN = session.refresh_token
-            vault._data["ACCESS_TOKEN"] = ACCESS_TOKEN
-            vault._data["REFRESH_TOKEN"] = REFRESH_TOKEN
-            vault._save()
-    return client
+CORE_READY = threading.Event()
 
 CRYPTPROTECT_LOCAL_MACHINE = 0x04
 
@@ -3447,11 +3680,11 @@ def vault_bump_attempt(row_id: str, err: str) -> None:
 
 # ---------- Bucket bootstrap & identity ----------
 def ensure_bucket() -> None:
-    if sb is None:
+    if session_manager.get_client() is None:
         logger.warning("Supabase offline — bucket check skipped", component="storage")
         return
     try:
-        sb.storage.create_bucket(
+        session_manager.get_client().storage.create_bucket(
             EVIDENCE_BUCKET,
             options={"public": True, "file_size_limit": 10 * 1024 * 1024},
         )
@@ -3628,16 +3861,16 @@ def register_workstation() -> str:
     while attempt < max_retries:
         attempt += 1
         try:
-            if sb is None:
+            if session_manager.get_client() is None:
                 logger.warning("Offline mode active. Using local standalone identity.", component="identity")
                 return f"offline-{HARDWARE_UUID}"
 
             # 1. Try to find the ID by UUID or Name
-            res = sb.table("workstations").select("id").eq("hardware_uuid", HARDWARE_UUID).execute()
+            res = session_manager.get_client().table("workstations").select("id").eq("hardware_uuid", HARDWARE_UUID).execute()
             wid = res.data[0]["id"] if res.data else None
 
             if not wid:
-                res_name = sb.table("workstations").select("id").eq("name", WORKSTATION_NAME).execute()
+                res_name = session_manager.get_client().table("workstations").select("id").eq("name", WORKSTATION_NAME).execute()
                 if res_name.data:
                     wid = res_name.data[0]["id"]
                     logger.info("Reusing existing record", component="identity", workstation_name=WORKSTATION_NAME)
@@ -3652,11 +3885,11 @@ def register_workstation() -> str:
             }
 
             if wid:
-                sb.table("workstations").update(payload).eq("id", wid).execute()
+                session_manager.get_client().table("workstations").update(payload).eq("id", wid).execute()
             else:
                 import uuid
                 payload["id"] = str(uuid.uuid4())
-                res_new = sb.table("workstations").insert(payload).execute()
+                res_new = session_manager.get_client().table("workstations").insert(payload).execute()
                 wid = res_new.data[0]["id"]
 
             logger.info("Handshake secured", component="identity", wid=wid)
@@ -3948,12 +4181,12 @@ def upload_evidence(path: str, payload: bytes) -> str | None:
         if delay:
             time.sleep(delay)
         try:
-            sb.storage.from_(EVIDENCE_BUCKET).upload(
+            session_manager.get_client().storage.from_(EVIDENCE_BUCKET).upload(
                 path,
                 payload,
                 {"content-type": "image/jpeg", "upsert": "true"},
             )
-            return sb.storage.from_(EVIDENCE_BUCKET).get_public_url(path)
+            return session_manager.get_client().storage.from_(EVIDENCE_BUCKET).get_public_url(path)
         except Exception as e:
             last_exc = e
             logger.error("upload failed", component="storage", path=path, attempt=attempt+1, error=str(e), exc_info=True)
@@ -3971,7 +4204,7 @@ def archive_evidence(alert_id: str, severity: str, workstation_id: str, volatile
 
     evidence_row_id: str | None = None
     try:
-        ins = sb.table("evidence_logs").insert({
+        ins = session_manager.get_client().table("evidence_logs").insert({
             "alert_id": alert_id,
             "metadata": base_meta,
         }).execute()
@@ -3984,9 +4217,9 @@ def archive_evidence(alert_id: str, severity: str, workstation_id: str, volatile
     def _patch_row(patch: dict) -> None:
         try:
             if evidence_row_id:
-                sb.table("evidence_logs").update(patch).eq("id", evidence_row_id).execute()
+                session_manager.get_client().table("evidence_logs").update(patch).eq("id", evidence_row_id).execute()
             else:
-                sb.table("evidence_logs").insert({"alert_id": alert_id, **patch}).execute()
+                session_manager.get_client().table("evidence_logs").insert({"alert_id": alert_id, **patch}).execute()
         except Exception as e:
             logger.error("patch failed", component="pipelines", error=str(e), exc_info=True)
 
@@ -4075,11 +4308,11 @@ class FocusState:
         self.last_refresh = time.time()
         try:
             # 1. Fetch Focus Mode State
-            s = sb.table("system_settings").select("focus_mode").eq("id", 1).maybe_single().execute()
+            s = session_manager.get_client().table("system_settings").select("focus_mode").eq("id", 1).maybe_single().execute()
             self.enabled = bool(s.data and s.data.get("focus_mode"))
             
             # 2. ALWAYS pull the allowed app list, even if Focus Mode is OFF
-            a = sb.table("allowed_apps").select("process_name, whitelisted").execute()
+            a = session_manager.get_client().table("allowed_apps").select("process_name, whitelisted").execute()
             self.whitelist = set()
             self.known_apps = set()
             for row in (a.data or []):
@@ -4208,19 +4441,19 @@ def _refresh_telegram_targets() -> None:
     if time.time() - _TELEGRAM_CACHE_TS < _TELEGRAM_CACHE_TTL:
         return  # Cache still fresh
     try:
-        if not sb:
+        if session_manager.get_client() is None:
             return
         # Fetch bot token from school_settings if not already set
         if not _TELEGRAM_BOT_TOKEN:
             try:
-                resp = sb.table("school_settings").select("telegram_bot_token").limit(1).execute()
+                resp = session_manager.get_client().table("school_settings").select("telegram_bot_token").limit(1).execute()
                 if resp.data and resp.data[0].get("telegram_bot_token"):
                     _TELEGRAM_BOT_TOKEN = resp.data[0]["telegram_bot_token"]
             except Exception:
                 pass  # Table may not exist; edge function env is primary source
 
         # Fetch all linked Telegram chat IDs from profiles
-        resp = sb.from_("profiles").select("telegram_chat_id").eq("phone_verified", True).not_.is_("telegram_chat_id", "null").execute()
+        resp = session_manager.get_client().from_("profiles").select("telegram_chat_id").eq("phone_verified", True).not_.is_("telegram_chat_id", "null").execute()
         if resp.data:
             _TELEGRAM_CHAT_IDS = [int(p["telegram_chat_id"]) for p in resp.data if p.get("telegram_chat_id")]
         else:
@@ -4424,9 +4657,9 @@ def fire_alert(workstation_id: str, title: str, proc: str | None,
     logger.warning("ALERT", component="enforcement", severity=severity.upper(), reason=reason, proc=proc, title=title)
 
     try:
-        if sb is None or str(workstation_id).startswith("offline-"):
+        if session_manager.get_client() is None or str(workstation_id).startswith("offline-"):
             raise ConnectionError("offline")
-        res = sb.table("alerts").insert(payload).execute()
+        res = session_manager.get_client().table("alerts").insert(payload).execute()
         if res.data:
             archive_evidence(res.data[0]["id"], severity, workstation_id, volatile_snapshot)
             return
@@ -4488,9 +4721,9 @@ def record_fastlane_alert(workstation_id: str, kind_label: str, detail: str,
             pass
 
     try:
-        if sb is None or str(workstation_id).startswith("offline-"):
+        if session_manager.get_client() is None or str(workstation_id).startswith("offline-"):
             raise ConnectionError("offline")
-        res = sb.table("alerts").insert(payload).execute()
+        res = session_manager.get_client().table("alerts").insert(payload).execute()
         if res.data:
             archive_evidence(res.data[0]["id"], "critical", workstation_id, screenshot_bytes)
             return
@@ -4520,9 +4753,9 @@ def log_ambient(workstation_id: str, title: str | None, proc: str | None,
     payload = _build_activity_payload(workstation_id, title, proc, severity,
                                       is_anomaly, is_backlogged=False)
     try:
-        if sb is None or str(workstation_id).startswith("offline-"):
+        if session_manager.get_client() is None or str(workstation_id).startswith("offline-"):
             raise ConnectionError("offline")
-        sb.table("activity_logs").insert(payload).execute()
+        session_manager.get_client().table("activity_logs").insert(payload).execute()
     except Exception as e:
         logger.error("live insert failed → vaulting", component="ambient", error=str(e), exc_info=True)
         offline_payload = _build_activity_payload(
@@ -4535,7 +4768,7 @@ def log_ambient(workstation_id: str, title: str | None, proc: str | None,
 # =====================================================
 # PHASE 6 — THE SYNC DAEMON (The Surge)
 # =====================================================
-def _supabase_alive() -> bool:
+def network_reachable() -> bool:
     """Lightweight reachability probe. Cheap & non-mutating."""
     try:
         url = SUPABASE_URL
@@ -4543,23 +4776,18 @@ def _supabase_alive() -> bool:
             try: vault.load()
             except Exception: pass
             url = vault.get("SUPABASE_URL")
-        if not url: return False
+        if not url:
+            sys_state.update_network(NetworkState.OFFLINE, "No URL configured", "probe")
+            return False
         
         host = url.replace("https://", "").replace("http://", "").split("/")[0]
         with socket.create_connection((host, 443), timeout=4):
+            sys_state.update_network(NetworkState.ONLINE, "TCP 443 open", "probe")
             return True
-    except Exception:
+    except Exception as e:
+        sys_state.update_network(NetworkState.OFFLINE, str(e), "probe")
         return False
 
-
-def _reinitialize_supabase() -> None:
-    """Forces a hard reset of the Supabase client to clear stale JWT tokens."""
-    global sb
-    logger.info("JWT Token likely expired. Reinitializing Supabase client...", component="sync")
-    try:
-        sb = _build_supabase_client()
-    except Exception as e:
-        logger.error("Client re-init failed", component="sync", error=str(e), exc_info=True)
 
 def _surge_one(row) -> bool:
     """
@@ -4593,10 +4821,10 @@ def _surge_one(row) -> bool:
         evidence = json.loads(evidence_json) if evidence_json else {}
 
         # Resolve fake offline UUID to real UUID to prevent Postgres 22P02 errors
-        if str(payload.get("workstation_id", "")).startswith("offline-") and sb is not None:
+        if str(payload.get("workstation_id", "")).startswith("offline-") and session_manager.get_client() is not None:
             try:
                 # Hit the cache/DB to get the real UUID for this hardware
-                _wid_res = sb.table("workstations").select("id").eq("hardware_uuid", HARDWARE_UUID).execute()
+                _wid_res = session_manager.get_client().table("workstations").select("id").eq("hardware_uuid", HARDWARE_UUID).execute()
                 if _wid_res.data:
                     payload["workstation_id"] = _wid_res.data[0]["id"]
             except Exception:
@@ -4616,12 +4844,12 @@ def _surge_one(row) -> bool:
             blob_path = CACHE_DIR / screen_file
             if blob_path.exists():
                 try:
-                    sb.storage.from_(EVIDENCE_BUCKET).upload(
+                    session_manager.get_client().storage.from_(EVIDENCE_BUCKET).upload(
                         f"{payload['workstation_id']}/vault-{row_id}-screen.jpg",
                         blob_path.read_bytes(),
                         {"content-type": "image/jpeg", "upsert": "true"},
                     )
-                    screenshot_url = sb.storage.from_(EVIDENCE_BUCKET).get_public_url(
+                    screenshot_url = session_manager.get_client().storage.from_(EVIDENCE_BUCKET).get_public_url(
                         f"{payload['workstation_id']}/vault-{row_id}-screen.jpg"
                     )
                 except Exception as e:
@@ -4631,12 +4859,12 @@ def _surge_one(row) -> bool:
             blob_path = CACHE_DIR / cam_file
             if blob_path.exists():
                 try:
-                    sb.storage.from_(EVIDENCE_BUCKET).upload(
+                    session_manager.get_client().storage.from_(EVIDENCE_BUCKET).upload(
                         f"{payload['workstation_id']}/vault-{row_id}-webcam.jpg",
                         blob_path.read_bytes(),
                         {"content-type": "image/jpeg", "upsert": "true"},
                     )
-                    webcam_url = sb.storage.from_(EVIDENCE_BUCKET).get_public_url(
+                    webcam_url = session_manager.get_client().storage.from_(EVIDENCE_BUCKET).get_public_url(
                         f"{payload['workstation_id']}/vault-{row_id}-webcam.jpg"
                     )
                 except Exception as e:
@@ -4647,7 +4875,7 @@ def _surge_one(row) -> bool:
         if table_name == "alerts" and "created_at" in payload:
             payload["timestamp"] = payload.pop("created_at")
             
-        res = sb.table(table_name).insert(payload).execute()
+        res = session_manager.get_client().table(table_name).insert(payload).execute()
         # PostgREST may return empty data on successful insert if RLS restricts SELECT operations.
         # We assume success if no exception was raised by execute().
 
@@ -4663,7 +4891,7 @@ def _surge_one(row) -> bool:
             if screenshot_url: ev_row["screenshot_url"] = screenshot_url
             if webcam_url: ev_row["webcam_url"] = webcam_url
             try:
-                sb.table("evidence_logs").insert(ev_row).execute()
+                session_manager.get_client().table("evidence_logs").insert(ev_row).execute()
             except Exception as e:
                 logger.error("evidence_logs surge non-fatal", component="sync", error=str(e), exc_info=True)
 
@@ -4682,14 +4910,14 @@ def _surge_one(row) -> bool:
         # Trigger hard reset if the token expired during a long offline
         # window, OR if `sb` was never successfully built in the first
         # place (verified bug #5). That second case used to be invisible
-        # here: `sb is None` makes every `sb.table(...)` call above raise
+        # here: `session_manager.get_client() is None` makes every `session_manager.get_client().table(...)` call above raise
         # a plain `AttributeError: 'NoneType' object has no attribute
         # 'table'`, which doesn't contain "401"/"jwt"/"unauthorized" — so
         # this check never fired, and a client that failed to initialize
         # at boot (e.g. the network wasn't up yet) stayed offline forever
         # even once connectivity came back.
-        if sb is None or "401" in err_msg or "unauthorized" in err_msg.lower() or "jwt" in err_msg.lower() or "nonetype" in err_msg.lower():
-            _reinitialize_supabase()
+        if session_manager.get_client() is None or "401" in err_msg or "unauthorized" in err_msg.lower() or "jwt" in err_msg.lower() or "nonetype" in err_msg.lower():
+            session_manager.force_refresh()
 
         return False
 
@@ -4703,9 +4931,9 @@ def sync_daemon() -> None:
     """
     _name_current_thread("sync_daemon")
     logger.info("daemon armed", component="sync", interval=SYNC_INTERVAL)
+    CORE_READY.wait(timeout=30)
     while True:
         try:
-            time.sleep(SYNC_INTERVAL)
 
             # Verified bug #5: if boot-time client init raced Wi-Fi coming
             # up, `sb` stayed permanently None — the only place that ever
@@ -4715,15 +4943,36 @@ def sync_daemon() -> None:
             # forever despite the network being fine. Check independently
             # of pending rows so a cold `sb` gets a chance to heal on
             # every tick the network is actually up.
-            if sb is None and _supabase_alive():
-                _reinitialize_supabase()
+            if session_manager.get_client() is None and network_reachable():
+                session_manager.force_refresh()
 
             pending = vault_pending(limit=25)
             if not pending:
+                sys_state.update_sync(SyncState.IDLE, "Queue empty", "sync_daemon")
                 continue
-            if not _supabase_alive():
-                logger.info("legacy item(s) waiting — link still down", component="sync", pending=len(pending))
+            if not sys_state.is_ready_for_sync():
+                # Report exactly why we are blocked
+                with sys_state.lock:
+                    if sys_state.network != NetworkState.ONLINE:
+                        reason = "Network offline"
+                        state = SyncState.BLOCKED_BY_NETWORK
+                    elif sys_state.auth != AuthState.AUTHENTICATED:
+                        reason = "Auth invalid"
+                        state = SyncState.BLOCKED_BY_AUTH
+                    elif sys_state.client != ClientState.READY:
+                        reason = "Client unavailable"
+                        state = SyncState.BLOCKED_BY_CLIENT
+                    elif sys_state.license != LicenseState.VALID:
+                        reason = "License invalid"
+                        state = SyncState.DEGRADED
+                    else:
+                        reason = "Unknown blocker"
+                        state = SyncState.DEGRADED
+                sys_state.update_sync(state, reason, "sync_daemon", q_depth=len(pending))
+                logger.info(f"sync blocked: {reason}", component="sync", pending=len(pending))
                 continue
+                
+            sys_state.update_sync(SyncState.FLUSHING, "Starting queue drain", "sync_daemon", q_depth=len(pending))
             logger.info("connection restored — surging legacy item(s)", component="sync", pending=len(pending))
             wins = 0
             for row in pending:
@@ -4731,10 +4980,15 @@ def sync_daemon() -> None:
                     wins += 1
                 else:
                     # Stop on first failure to avoid hammering a flapping link.
+                    sys_state.update_sync(SyncState.DEGRADED, "Surge failed mid-flight", "sync_daemon", q_depth=len(pending)-wins)
                     break
+            if wins == len(pending):
+                sys_state.update_sync(SyncState.IDLE, "Surge complete", "sync_daemon")
             logger.info("Surge complete", component="sync", wins=wins, total=len(pending))
         except Exception as e:
+            sys_state.update_sync(SyncState.DEGRADED, str(e), "sync_daemon")
             logger.error("daemon error", component="sync", error=str(e), exc_info=True)
+        time.sleep(SYNC_INTERVAL)
 
 # =====================================================
 # PHASE 2, 3 & 4: OCR ANALYSIS, ROUTING, & ARBITRATION
@@ -4973,8 +5227,8 @@ class DPDP_Monitor:
 
     def _clipboard_watcher(self):
         _name_current_thread("clipboard")
+        CORE_READY.wait(timeout=30)
         while True:
-            time.sleep(1.5)
             try:
                 cb_text = pyperclip.paste()
                 if not cb_text:
@@ -5006,7 +5260,7 @@ class RemoteConfigManager:
     """Polls Supabase for remote config changes and syncs DPAPI + globals."""
 
     def __init__(self, agent_id: str):
-        # Deliberately does NOT store a client reference. _reinitialize_supabase()
+        # Deliberately does NOT store a client reference. session_manager.force_refresh()
         # replaces the module-level `sb` global (e.g. on JWT expiry) — a manager
         # that captured the client once at construction would keep hitting the
         # dead client forever after that swap, silently, since fetch() never
@@ -5015,10 +5269,10 @@ class RemoteConfigManager:
         self.agent_id = agent_id
 
     def fetch(self):
-        if sb is None:
+        if session_manager.get_client() is None:
             return
         try:
-            response = sb.table("agent_configs").select("*").eq("workstation_id", self.agent_id).order("created_at", desc=True).limit(1).execute()
+            response = session_manager.get_client().table("agent_configs").select("*").eq("workstation_id", self.agent_id).order("created_at", desc=True).limit(1).execute()
             if response.data and len(response.data) > 0:
                 config = response.data[0]
                 
@@ -5162,6 +5416,7 @@ class ProfessionalOTA:
 
 def remote_config_loop(workstation_id: str) -> None:
     _name_current_thread("remote_config")
+    CORE_READY.wait(timeout=30)
     manager = RemoteConfigManager(workstation_id)
     while True:
         workstation_id = resolve_offline_wid(workstation_id)
@@ -5517,6 +5772,7 @@ FSM_BRAIN = MasterFSM()
 
 def scan_loop(workstation_id: str) -> None:
     _name_current_thread("scan")
+    CORE_READY.wait(timeout=30)
     global _LATEST_BROWSER_DOM, _LATEST_BROWSER_URL, _LATEST_URL_HOSTNAME, _LATEST_TRIPWIRE_SCORE, _LATEST_MONETIZATION_SCORE, _LATEST_ALE_SCORE
     last_alerted, last_ambient = {}, {}
     _debounce_prune_ts = time.time()
@@ -5583,8 +5839,8 @@ def scan_loop(workstation_id: str) -> None:
                     _LATEST_TRIPWIRE_SCORE = _LATEST_MONETIZATION_SCORE = _LATEST_ALE_SCORE = 0.0
 
             try:
-                if sb is not None:
-                    sb.table("workstations").update({
+                if session_manager.get_client() is not None:
+                    session_manager.get_client().table("workstations").update({
                         "current_window": title_str, "current_process": proc_str,
                     }).eq("id", workstation_id).execute()
             except Exception: pass
@@ -5946,8 +6202,8 @@ def scan_loop(workstation_id: str) -> None:
                     "payload": payload_data if is_critical_violation else None
                 }
                 try:
-                    if sb is not None and not str(workstation_id).startswith("offline-"):
-                        sb.table("unauthorized_events").insert(offline_payload).execute()
+                    if session_manager.get_client() is not None and not str(workstation_id).startswith("offline-"):
+                        session_manager.get_client().table("unauthorized_events").insert(offline_payload).execute()
                     else:
                         raise ConnectionError("offline")
                 except Exception as e:
@@ -5971,7 +6227,7 @@ def scan_loop(workstation_id: str) -> None:
         time.sleep(SCAN_INTERVAL)
 
 def resolve_offline_wid(current_wid: str) -> str:
-    if current_wid.startswith("offline-") and sb is not None:
+    if current_wid.startswith("offline-") and session_manager.get_client() is not None:
         try:
             new_wid = register_workstation()
             if new_wid and not new_wid.startswith("offline-"):
@@ -5983,11 +6239,12 @@ def resolve_offline_wid(current_wid: str) -> str:
 
 def heartbeat_loop(workstation_id: str) -> None:
     _name_current_thread("heartbeat")
+    CORE_READY.wait(timeout=30)
     while True:
         workstation_id = resolve_offline_wid(workstation_id)
         try:
-            if sb is not None:
-                sb.table("workstations").update({
+            if session_manager.get_client() is not None:
+                session_manager.get_client().table("workstations").update({
                     "status": "online",
                     "last_heartbeat": now_iso(),
                     "os_info": os_info(),
@@ -6005,7 +6262,7 @@ def controlled_shutdown(workstation_id: str, action_id: str):
         if cam:
             url = upload_evidence(f"{workstation_id}/action-{action_id}-webcam.jpg", cam)
             if url:
-                try: sb.table("evidence_logs").insert({"metadata": {"command": "terminate", "action_id": action_id, "is_backlogged": False}, "webcam_url": url}).execute()
+                try: session_manager.get_client().table("evidence_logs").insert({"metadata": {"command": "terminate", "action_id": action_id, "is_backlogged": False}, "webcam_url": url}).execute()
                 except Exception: pass
 
     def _upload_screen():
@@ -6146,6 +6403,7 @@ def realtime_c2_listener(workstation_id: str) -> None:
     Auto-reconnects with exponential backoff on disconnection.
     """
     _name_current_thread("realtime_c2")
+    CORE_READY.wait(timeout=30)
     import asyncio
 
     async def _run_realtime():
@@ -6238,7 +6496,7 @@ def realtime_c2_listener(workstation_id: str) -> None:
                             # a corresponding pending row (the DB insert happens
                             # asynchronously on the frontend for logging only).
                             if not is_broadcast:
-                                if not sb:
+                                if session_manager.get_client() is None:
                                     # Verified bug #6: previously this just logged and
                                     # dropped the command, forcing every future command
                                     # back onto the slow 10s polling loop (action_loop)
@@ -6247,8 +6505,8 @@ def realtime_c2_listener(workstation_id: str) -> None:
                                     # still go through instead of silently degrading.
                                     logger.warning("Realtime command received with no Supabase client — attempting reconnect",
                                                    component="realtime", command=cmd, action_id=action_id)
-                                    _reinitialize_supabase()
-                                    if not sb:
+                                    session_manager.force_refresh()
+                                    if session_manager.get_client() is None:
                                         logger.warning("Realtime command dropped: Supabase client still unavailable",
                                                        component="realtime", command=cmd, action_id=action_id)
                                         return
@@ -6256,7 +6514,7 @@ def realtime_c2_listener(workstation_id: str) -> None:
                                 # ATOMIC CLAIM: compare-and-swap so action_loop
                                 # and this handler don't double-dispatch.
                                 claim = (
-                                    sb.table("admin_actions")
+                                    session_manager.get_client().table("admin_actions")
                                     .update({"status": "acknowledged"})
                                     .eq("id", action_id)
                                     .eq("status", "pending")
@@ -6274,7 +6532,7 @@ def realtime_c2_listener(workstation_id: str) -> None:
                                 dispatched, fail_reason = False, authorization_reason
                                 if not is_broadcast and sb:
                                     try:
-                                        sb.table("admin_actions").update({"status": "failed"}).eq("id", action_id).execute()
+                                        session_manager.get_client().table("admin_actions").update({"status": "failed"}).eq("id", action_id).execute()
                                     except Exception:
                                         pass
                                 logger.warning("Unauthorized admin action rejected", component="authz", command=cmd, action_id=action_id, reason=authorization_reason)
@@ -6328,7 +6586,7 @@ def realtime_c2_listener(workstation_id: str) -> None:
                                 download_url = meta.get("url")
                                 expected_sha256 = meta.get("sha256")
                                 if sb and not is_broadcast:
-                                    sb.table("admin_actions").update({"status": "acknowledged"}).eq("id", action_id).execute()
+                                    session_manager.get_client().table("admin_actions").update({"status": "acknowledged"}).eq("id", action_id).execute()
                                 ProfessionalOTA().perform_update(download_url, expected_sha256)
                                 return
 
@@ -6341,8 +6599,8 @@ def realtime_c2_listener(workstation_id: str) -> None:
                                         ALIAS_FILE.write_text(new_alias, encoding="utf-8")
                                         if platform.system() == "Windows":
                                             subprocess.call(["attrib", "+H", str(ALIAS_FILE)], shell=False)
-                                        if sb:
-                                            sb.table("workstations").update({"name": new_alias}).eq("id", workstation_id).execute()
+                                        if session_manager.get_client():
+                                            session_manager.get_client().table("workstations").update({"name": new_alias}).eq("id", workstation_id).execute()
                                         logger.info("Workstation alias updated via realtime", component="realtime", new_alias=new_alias)
                                     except Exception as e:
                                         dispatched, fail_reason = False, f"alias forge failed: {e}"
@@ -6359,8 +6617,8 @@ def realtime_c2_listener(workstation_id: str) -> None:
                             if not is_broadcast:
                                 final_status = "acknowledged" if dispatched else "failed"
                                 try:
-                                    if sb:
-                                        sb.table("admin_actions").update({"status": final_status}).eq("id", action_id).execute()
+                                    if session_manager.get_client():
+                                        session_manager.get_client().table("admin_actions").update({"status": final_status}).eq("id", action_id).execute()
                                 except Exception:
                                     pass
                             if not dispatched:
@@ -6370,7 +6628,7 @@ def realtime_c2_listener(workstation_id: str) -> None:
                             logger.error("Realtime dispatch error", component="realtime", error=str(e))
                             if sb and action_id and not is_broadcast:
                                 try:
-                                    sb.table("admin_actions").update({"status": "failed"}).eq("id", action_id).execute()
+                                    session_manager.get_client().table("admin_actions").update({"status": "failed"}).eq("id", action_id).execute()
                                 except Exception:
                                     pass
 
@@ -6430,15 +6688,16 @@ def realtime_c2_listener(workstation_id: str) -> None:
 def action_loop(workstation_id: str) -> None:
     """Fallback HTTP polling for C2 commands. Primary dispatch is via Realtime WebSocket."""
     _name_current_thread("action")
+    CORE_READY.wait(timeout=30)
     while True:
         workstation_id = resolve_offline_wid(workstation_id)
         try:
-            if sb is None:
+            if session_manager.get_client() is None:
                 time.sleep(10)
                 continue
             # We must select 'metadata' to extract the target process for the Scalpel.
             res = (
-                sb.table("admin_actions")
+                session_manager.get_client().table("admin_actions")
                 .select("id, command, created_at, metadata")
                 .eq("target_id", workstation_id)
                 .eq("status", "pending")
@@ -6459,7 +6718,7 @@ def action_loop(workstation_id: str) -> None:
                     if created and (now - created) > timedelta(seconds=COMMAND_TTL_SEC):
                         age = int((now - created).total_seconds())
                         logger.info("EXPIRED (marking as failed)", component="actions", age=age, command=action["command"], action_id=action["id"])
-                        sb.table("admin_actions").update({"status": "failed"}).eq("id", action["id"]).execute()
+                        session_manager.get_client().table("admin_actions").update({"status": "failed"}).eq("id", action["id"]).execute()
                         continue                    # ATOMIC CLAIM: flip pending -> acknowledged conditioned on the
                     # row still being 'pending'. realtime_c2_listener (WebSocket)
                     # polls/dispatches independently of this HTTP loop; without this
@@ -6468,7 +6727,7 @@ def action_loop(workstation_id: str) -> None:
                     # for a duplicate concurrent self-update). If claim.data comes
                     # back empty, the other consumer already took it -- skip it.
                     claim = (
-                        sb.table("admin_actions")
+                        session_manager.get_client().table("admin_actions")
                         .update({"status": "acknowledged"})
                         .eq("id", action["id"])
                         .eq("status", "pending")
@@ -6501,7 +6760,7 @@ def action_loop(workstation_id: str) -> None:
 
                     authorized, authorization_reason = authorize_admin_action(workstation_id, cmd, meta)
                     if not authorized:
-                        sb.table("admin_actions").update({"status": "failed"}).eq("id", action["id"]).execute()
+                        session_manager.get_client().table("admin_actions").update({"status": "failed"}).eq("id", action["id"]).execute()
                         logger.warning("Unauthorized admin action rejected", component="authz", command=cmd, action_id=action["id"], reason=authorization_reason)
                         continue
 
@@ -6552,7 +6811,7 @@ def action_loop(workstation_id: str) -> None:
                     elif cmd == "update":
                         download_url = meta.get("url")
                         expected_sha256 = meta.get("sha256")
-                        sb.table("admin_actions").update({"status": "acknowledged"}).eq("id", action["id"]).execute()
+                        session_manager.get_client().table("admin_actions").update({"status": "acknowledged"}).eq("id", action["id"]).execute()
                         ProfessionalOTA().perform_update(download_url, expected_sha256)
                         # perform_update() either os._exit(0)s into the new build
                         # or fully logs+returns False on its own failure path --
@@ -6573,7 +6832,7 @@ def action_loop(workstation_id: str) -> None:
                                 if platform.system() == "Windows":
                                     subprocess.call(["attrib", "+H", str(ALIAS_FILE)], shell=False)
 
-                                sb.table("workstations").update({"name": new_alias}).eq("id", workstation_id).execute()
+                                session_manager.get_client().table("workstations").update({"name": new_alias}).eq("id", workstation_id).execute()
                                 logger.info("Workstation alias updated", component="identity", new_alias=new_alias)
                             except Exception as e:
                                 dispatched, fail_reason = False, f"alias forge failed: {e}"
@@ -6591,14 +6850,14 @@ def action_loop(workstation_id: str) -> None:
                     # actually happened; otherwise "failed" with a logged reason,
                     # so the dashboard reflects reality instead of a rubber stamp.
                     final_status = "acknowledged" if dispatched else "failed"
-                    sb.table("admin_actions").update({"status": final_status}).eq("id", action["id"]).execute()
+                    session_manager.get_client().table("admin_actions").update({"status": final_status}).eq("id", action["id"]).execute()
                     if not dispatched:
                         logger.warning("Command claimed but not dispatched", component="actions", command=cmd, action_id=action["id"], reason=fail_reason)
 
                 except Exception as e:
                     logger.error("action dispatch error (isolated -- rest of batch continues)", component="actions", action_id=action.get("id"), command=action.get("command"), error=str(e), exc_info=True)
                     try:
-                        sb.table("admin_actions").update({"status": "failed"}).eq("id", action["id"]).execute()
+                        session_manager.get_client().table("admin_actions").update({"status": "failed"}).eq("id", action["id"]).execute()
                     except Exception:
                         pass
 
@@ -6662,7 +6921,7 @@ class BuildInfo:
             print(f"\033[90m[*]\033[0m {'Synchronizing IPC Channels'.ljust(45)}", end="", flush=True)
             time.sleep(0.2)
             try:
-                if _supabase_alive(): print("\033[92m[ OK ]\033[0m")
+                if network_reachable(): print("\033[92m[ OK ]\033[0m")
                 else: print("\033[93m[ OFFLINE ]\033[0m")
             except Exception:
                 print("\033[93m[ OFFLINE ]\033[0m")
@@ -6682,31 +6941,23 @@ class BuildInfo:
             pass
 
 def license_heartbeat_loop(workstation_id: str):
-    global ACCESS_TOKEN, REFRESH_TOKEN
     while True:
         try:
-            # Actively refresh token to prevent stale 401s (Round 3 fix)
-            if sb:
-                try:
-                    session = sb.auth.refresh_session()
-                except Exception as refresh_err:
-                    logger.debug(f"Session refresh failed: {refresh_err}", component="license")
-                    session = sb.auth.get_session()
-                    
-                if session and session.access_token != ACCESS_TOKEN:
-                    ACCESS_TOKEN = session.access_token
-                    REFRESH_TOKEN = session.refresh_token
-                    vault._data["ACCESS_TOKEN"] = ACCESS_TOKEN
-                    vault._data["REFRESH_TOKEN"] = REFRESH_TOKEN
-                    vault._save()
-                    TOKEN_ROTATED_EVENT.set()
-                    logger.info("Session token rotated, signaled C2 reconnect", component="license")
+            sys_state.update_license(LicenseState.CHECKING, "Starting heartbeat check", "heartbeat")
+            # Actively refresh token to prevent stale 401s (Round 3 fix, now via SessionManager)
+            session_manager.force_refresh()
+            
+            access_token, _ = session_manager.get_tokens()
+            if not access_token:
+                logger.warning("Heartbeat aborted: no access token available", component="license")
+                time.sleep(HEARTBEAT_INTERVAL)
+                continue
 
             payload = {"hardware_uuid": HARDWARE_UUID}
             req = urllib.request.Request(
                 f"{ENROLLMENT_ENDPOINT}/license_heartbeat",
                 data=json.dumps(payload).encode("utf-8"),
-                headers={"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
+                headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
             )
             import ssl, certifi
             context = ssl.create_default_context(cafile=certifi.where())
@@ -6716,6 +6967,7 @@ def license_heartbeat_loop(workstation_id: str):
                 # Cryptographic offline enforcement check
                 if "server_sig" in data and not verify_server_signature(data, data["server_sig"]):
                     logger.critical("License heartbeat signature mismatch! Possible MITM or tampering.", component="license")
+                    sys_state.update_license(LicenseState.REVOKED, "Signature mismatch", "heartbeat")
                     LICENSE_INVALID_EVENT.set()
                     return
 
@@ -6737,9 +6989,14 @@ def license_heartbeat_loop(workstation_id: str):
                 
                 if status in ("revoked", "suspended", "expired"):
                     logger.critical(f"License is {status}, shutting down.", component="license")
+                    sys_state.update_license(LicenseState.REVOKED, f"Status was {status}", "heartbeat")
                     LICENSE_INVALID_EVENT.set()
                     return
+                
+                sys_state.update_license(LicenseState.VALID, "Heartbeat OK", "heartbeat")
+
         except Exception as e:
+            sys_state.update_license(LicenseState.UNAUTHORIZED if "401" in str(e) else LicenseState.TEMPORARILY_UNAVAILABLE, str(e), "heartbeat")
             logger.error(f"License heartbeat error: {e}", component="license")
             # Offline tolerance based on saved bounds
             last_ok = vault.get("LAST_HEARTBEAT_OK_AT")
@@ -6949,6 +7206,7 @@ def main() -> None:
         # THE LAZARUS WATCHDOG
         # ==========================================
         logger.info("Lazarus Watchdog active. Monitoring vitals...", component="system")
+        CORE_READY.set()
         try:
             while True:
                 try:
@@ -6968,8 +7226,8 @@ def main() -> None:
                             
                             try:
                                 # Attempt to log the crash to the backend
-                                if sb:
-                                    sb.table("agent_health").insert({
+                                if session_manager.get_client():
+                                    session_manager.get_client().table("agent_health").insert({
                                         "workstation_id": wid,
                                         "status": "THREAD_CRASH",
                                         "error_log": error_msg,
@@ -6990,8 +7248,8 @@ def main() -> None:
         except KeyboardInterrupt:
             logger.info("Agent shutting down. Marking workstation offline.", component="system")
             try:
-                if sb:
-                    sb.table("workstations").update({"status": "offline"}).eq("id", wid).execute()
+                if session_manager.get_client():
+                    session_manager.get_client().table("workstations").update({"status": "offline"}).eq("id", wid).execute()
             except Exception:
                 pass
 
@@ -7191,38 +7449,27 @@ if __name__ == "__main__":
 
         SUPABASE_URL = vault.get("SUPABASE_URL")
         SUPABASE_KEY = vault.get("SUPABASE_ANON_KEY")
-        
-        # 3. Ignite the Supabase Engine FIRST to refresh tokens
-        # Load tokens from vault into globals BEFORE building the client,
-        # so _build_supabase_client() can set_session with them and so
-        # the license heartbeat has a valid Bearer token from the start.
-        ACCESS_TOKEN = vault.get("ACCESS_TOKEN")
-        REFRESH_TOKEN = vault.get("REFRESH_TOKEN")
+
+        # 3. Ignite the Supabase Engine FIRST via SessionManager
         try:
             if not SUPABASE_URL or not SUPABASE_KEY:
                 raise ValueError("Credentials missing")
-            sb = _build_supabase_client()
             
-            # Actively refresh token at boot to prevent stale 401s!
-            try:
-                session = sb.auth.refresh_session()
-            except Exception:
-                session = sb.auth.get_session()
-                
-            if session and session.access_token:
-                ACCESS_TOKEN = session.access_token
-                REFRESH_TOKEN = session.refresh_token
-                vault._data["ACCESS_TOKEN"] = ACCESS_TOKEN
-                vault._data["REFRESH_TOKEN"] = REFRESH_TOKEN
-                vault._save()
-                logger.info("Session tokens refreshed at boot", component="boot")
+            # This cleanly handles token loading, validation (Phase 2 fix), and refresh
+            session_manager.initialize_from_vault()
+            
+            # Set global vars for telemetry mapping later
+            HARDWARE_UUID = vault.get("HARDWARE_UUID") or HARDWARE_UUID
+            WORKSTATION_NAME = vault.get("WORKSTATION_NAME")
+            LICENSE_ID = vault.get("LICENSE_ID")
         except Exception as e:
-            logger.warning(f"Supabase offline mode. linkage failed: {e}", component="boot")
+            logger.critical(f"Supabase engine ignition failed structurally: {e}", component="boot")
+            # Fall through -- client will just be None/Offline state
             sb = None
 
         # Kick off ensure_bucket()/register_workstation() the instant sb is
         # ready (or confirmed unreachable — both functions already handle
-        # sb is None gracefully), rather than waiting for main() to start
+        # session_manager.get_client() is None gracefully), rather than waiting for main() to start
         # them. Previously they didn't run until AFTER the license-heartbeat
         # check below — a third, separate, sequential network round-trip
         # (its own connection, its own TLS handshake, a 5s timeout) — even
@@ -7255,10 +7502,11 @@ if __name__ == "__main__":
         try:
             import ssl, certifi, urllib.request, json
             payload = {"hardware_uuid": HARDWARE_UUID}
+            access_token, _ = session_manager.get_tokens()
             req = urllib.request.Request(
                 f"{ENROLLMENT_ENDPOINT}/license_heartbeat",
                 data=json.dumps(payload).encode("utf-8"),
-                headers={"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
+                headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
             )
             ctx = ssl.create_default_context(cafile=certifi.where())
             with urllib.request.urlopen(req, context=ctx, timeout=5) as response:

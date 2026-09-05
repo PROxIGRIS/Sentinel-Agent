@@ -114,6 +114,11 @@ func (v *Vault) Set(key, value string) {
 	v.data[key] = value
 }
 
+// Delete removes one value without disturbing unrelated agent state.
+func (v *Vault) Delete(key string) {
+	delete(v.data, key)
+}
+
 // SetMany stores several values at once (used after a successful activate).
 func (v *Vault) SetMany(m map[string]string) {
 	for k, val := range m {

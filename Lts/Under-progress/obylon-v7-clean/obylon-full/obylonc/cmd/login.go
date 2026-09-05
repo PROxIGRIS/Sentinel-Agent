@@ -14,7 +14,7 @@ import (
 )
 
 func runLogin(args []string) int {
-	fs, _, _ := newFlagSet("login")
+	fs, devFlag, _ := newFlagSet("login")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			printLoginHelp()
@@ -55,7 +55,7 @@ func runLogin(args []string) int {
 
 	ui.PrintBanner("O B Y L O N   L O G I N")
 
-	client := api.NewClient(10 * time.Second)
+	client := api.NewClient(30 * time.Second)
 	baseURL := "https://umbraxis.tclservice.in"
 
 	// 1. Initiate Device Authorization
@@ -69,17 +69,25 @@ func runLogin(args []string) int {
 	payload := map[string]interface{}{
 		"application": "obylon", 
 		"deviceFingerprint": fingerprint,
-		"requestedScopes": []string{"obylon:read", "obylon:update", "obylon:admin"},
+		"requestedScopes": []string{"obylon:read", "obylon:update", "obylon:warden", "obylon:policy", "obylon:diagnose", "obylon:evidence", "obylon:admin"},
 		"actionId": "obylon.session.connect",
 	}
 
 	statusCode, data, _, err := client.PostJSON(baseURL+"/api/auth/authorization-requests", nil, payload)
 	if err != nil {
-		sp.Fail(fmt.Sprintf("Network error: %v", err))
+		if *devFlag {
+			sp.Fail(fmt.Sprintf("Network error: %v", err))
+		} else {
+			sp.Fail("Something went wrong, please try again.")
+		}
 		return 1
 	}
 	if statusCode >= 400 {
-		sp.Fail(fmt.Sprintf("Server rejected request (HTTP %d)", statusCode))
+		if *devFlag {
+			sp.Fail(fmt.Sprintf("Server rejected request (HTTP %d)", statusCode))
+		} else {
+			sp.Fail("Something went wrong, please try again.")
+		}
 		return 1
 	}
 	sp.Stop()
