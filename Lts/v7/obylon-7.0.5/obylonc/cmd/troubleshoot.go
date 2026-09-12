@@ -22,7 +22,7 @@ func runTroubleshoot(args []string) int {
 	ui.PrintBanner("O B Y L O N   S M A R T   D I A G N O S T I C S")
 	fmt.Println(ui.Dim("Initializing heuristic analysis engine...\n"))
 
-	s := spinner.New(spinner.CharSets[14], 80*time.Millisecond)
+	s := spinner.New(spinner.CharSets[14], 120*time.Millisecond)
 	s.Color("cyan", "bold")
 	s.Start()
 	defer s.Stop()
@@ -41,17 +41,17 @@ func runTroubleshoot(args []string) int {
 	updateScene(2, "Verifying execution privileges...")
 	updateScene(3, "Asserting Task Scheduler API availability...")
 
-	updateScene(4, "Querying scheduled task 'Obylon\\Brain'...")
-	out, err := exec.Command("schtasks", "/query", "/TN", "Obylon\\Brain").CombinedOutput()
+	updateScene(4, "Querying scheduled task 'ObylonAgent'...")
+	out, err := exec.Command("schtasks", "/query", "/TN", "ObylonAgent").CombinedOutput()
 	if err != nil {
 		s.Stop()
-		ui.Error("Scheduled task 'Obylon\\Brain' is missing or corrupted.")
+		ui.Error("Scheduled task 'ObylonAgent' is missing or corrupted.")
 		addReport("❌ Scheduled task missing. The agent is not registered to boot automatically.")
-		addReport("   Resolution: Run 'obylonc boot --install' to re-register the task.")
+		addReport("   Resolution: Run 'obylonc boot enable (Run as Administrator)' to re-register the task.")
 		printReport(report)
 		return 1
 	}
-	addReport("✅ Scheduled task 'Obylon\\Brain' is correctly registered.")
+	addReport("✅ Scheduled task 'ObylonAgent' is correctly registered.")
 
 	updateScene(5, "Hunting zombie processes...")
 	updateScene(6, "Isolating agent ecosystem...")
@@ -60,7 +60,7 @@ func runTroubleshoot(args []string) int {
 
 	updateScene(7, "Re-verifying process termination...")
 	updateScene(8, "Dispatching cold boot trigger via Task Scheduler...")
-	if err := exec.Command("schtasks", "/Run", "/TN", "Obylon\\Brain").Run(); err != nil {
+	if err := exec.Command("schtasks", "/Run", "/TN", "ObylonAgent").Run(); err != nil {
 		s.Stop()
 		ui.Error("Failed to start scheduled task manually.")
 		addReport("❌ Schtasks execution failed. Task may be disabled or privileges are insufficient.")
@@ -74,7 +74,7 @@ func runTroubleshoot(args []string) int {
 	for i := 0; i < 15; i++ {
 		time.Sleep(200 * time.Millisecond)
 		out, _ := exec.Command("tasklist", "/FI", "IMAGENAME eq Obylon.exe", "/NH").Output()
-		if strings.Contains(string(out), "Obylon.exe") {
+		if strings.Contains(strings.ToLower(string(out)), "obylon.exe") {
 			spawned = true
 			break
 		}
@@ -125,7 +125,7 @@ func runTroubleshoot(args []string) int {
 	for i := 0; i < 20; i++ {
 		time.Sleep(250 * time.Millisecond)
 		out, _ := exec.Command("tasklist", "/FI", "IMAGENAME eq Obylon.exe", "/NH").Output()
-		if !strings.Contains(string(out), "Obylon.exe") {
+		if !strings.Contains(strings.ToLower(string(out)), "obylon.exe") {
 			crashed = true
 			break
 		}
@@ -168,7 +168,7 @@ func runTroubleshoot(args []string) int {
 
 	updateScene(12, "Verifying ObylonBroker IPC binding...")
 	out, _ = exec.Command("tasklist", "/FI", "IMAGENAME eq ObylonBroker.exe", "/NH").Output()
-	if !strings.Contains(string(out), "ObylonBroker.exe") {
+	if !strings.Contains(strings.ToLower(string(out)), "obylonbroker.exe") {
 		addReport("❌ ObylonBroker.exe failed to spawn. Rust IPC subsystems will be disconnected.")
 	} else {
 		addReport("✅ ObylonBroker.exe is actively running alongside core.")

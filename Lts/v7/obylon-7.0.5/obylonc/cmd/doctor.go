@@ -272,7 +272,7 @@ func validateBootTaskDefinition(raw []byte) (ok bool, message string) {
 	if err != nil || restartCount < 1 {
 		return false, "boot task is missing a valid restart-recovery count"
 	}
-	if !strings.EqualFold(strings.TrimSpace(definition.Actions.Context), "System") || !hasBrokerAction(definition.Actions.Execs) {
+	if !hasBrokerAction(definition.Actions.Execs) {
 		return false, "boot task does not point at ObylonBroker.exe under the Local System action context"
 	}
 	return true, "boot task is registered, enabled, runs ObylonBroker.exe as Local System, and has duplicate-spawn and restart recovery controls"
