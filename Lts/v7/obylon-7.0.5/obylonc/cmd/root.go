@@ -36,9 +36,9 @@ import (
 // and the agent's boot banner identify the same source release. Override at
 // build time with ldflags when producing a signed artifact.
 var (
-	Version     = "7.0.5-LTS"
+	Version     = "7.0.6-LTS"
 	BuildDate   = "2026-09-05"
-	BuildNumber = "7.0.5-202609061200"
+	BuildNumber = "7.0.6-202609061200"
 	Commit      = "session-broker+provenance+multilingual+recovery-intelligence+vault-integrity+ad-network-reputation+adaptive-scan-pressure+installer-activation+cli-admin-scope"
 )
 

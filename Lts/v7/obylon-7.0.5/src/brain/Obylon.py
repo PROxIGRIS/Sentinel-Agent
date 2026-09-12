@@ -27,7 +27,7 @@ Compliance:
     Students are notified at login that school devices are monitored.
     Data is accessible only to authorized school IT staff and admin.
 
-v7.0.5 ENGINEERING CHANGELOG
+v7.0.6 ENGINEERING CHANGELOG
 ============================
     1. SESSION BROKER (boot deadlock fix): the SYSTEM scheduled task now
        runs ObylonBroker.exe (Rust — see rust/broker), a thin supervisor
@@ -4343,7 +4343,7 @@ def get_verified_hardware_fingerprint(
 ) -> str | None:
     """Compatibility helper for exceptional provisioning paths only.
 
-    Normal 7.0.5 boot uses _identity_verification_loop and never blocks on this
+    Normal 7.0.6 boot uses _identity_verification_loop and never blocks on this
     function. Fresh license-seed provisioning may still need a verified proof
     before creating a new activation.
     """
@@ -4440,7 +4440,7 @@ def _server_rows_by_hardware_fingerprint(client, fingerprint: str | None) -> tup
     Current production schemas may only have ``os_info``. When the optional
     ``hardware_fingerprint`` column exists we use it directly; otherwise we
     inspect the machine-bound digest written inside the already-existing JSON
-    ``os_info`` column. This keeps 7.0.5 compatible with today's backend.
+    ``os_info`` column. This keeps 7.0.6 compatible with today's backend.
     """
     fingerprint = node_identity.normalize_fingerprint(fingerprint)
     if not fingerprint:
@@ -6098,7 +6098,7 @@ class ProfessionalOTA:
         for attempt in range(max_retries):
             try:
                 logger.info("OTA download started", component="ota", url=url, attempt=attempt+1)
-                req = urllib.request.Request(url, headers={'User-Agent': 'Obylon/7.0.5-LTS'})
+                req = urllib.request.Request(url, headers={'User-Agent': 'Obylon/7.0.6-LTS'})
                 response = _robust_urlopen(req, timeout=60, component_name="ota")
                 with response, open(dest_path, 'wb') as out:
                     shutil.copyfileobj(response, out)
@@ -8120,8 +8120,8 @@ def _boot_license_watch() -> None:
 
 # ---------- Main ----------
 class BuildInfo:
-    VERSION = "7.0.5-LTS"
-    BUILD_NUMBER = "7.0.5-202609061200"
+    VERSION = "7.0.6-LTS"
+    BUILD_NUMBER = "7.0.6-202609061200"
     BUILD_DATE = "2026-09-06"
     COMMIT = "session-broker+provenance+multilingual+recovery-intelligence+vault-integrity+ad-network-reputation+adaptive-scan-pressure+node-reconciliation+action-dispatch-hardening"
 

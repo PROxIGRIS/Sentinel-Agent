@@ -127,7 +127,7 @@ func (c *Client) doJSON(method, path, bearer string, input, output interface{}) 
 		return err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "Obylon-CLI/7.0.5")
+	req.Header.Set("User-Agent", "Obylon-CLI/7.0.6")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	if input != nil {
 		req.Header.Set("Content-Type", "application/json")

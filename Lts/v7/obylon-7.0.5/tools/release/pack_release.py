@@ -8,11 +8,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 os.chdir(REPO_ROOT)
 
 now = datetime.datetime.now()
-build_number = os.environ.get("OBYLON_BUILD_NUMBER", "7.0.5-" + now.strftime("%Y%m%d%H%M"))
+build_number = os.environ.get("OBYLON_BUILD_NUMBER", "7.0.6-" + now.strftime("%Y%m%d%H%M"))
 metadata = {
     "build_date": now.isoformat(),
     "build_number": build_number,
-    "description": "Obylon Full Source Release — 7.0.5 LTS stabilization: node reconciliation + reliable command dispatch + persistent rename",
+    "description": "Obylon Full Source Release — 7.0.6 LTS stabilization: node reconciliation + reliable command dispatch + persistent rename",
     "status": "Release candidate; endpoint validation required"
 }
 

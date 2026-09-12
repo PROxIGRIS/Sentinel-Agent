@@ -2,7 +2,7 @@
 // not part of any crate build (it isn't under rust/broker/src/ and
 // nothing mod-declares it) — kept here only as a record of what was
 // most recently applied to rust/broker/src/main.rs's ensure_acls().
-// Updated to match that fix (see FIXES_7.0.5_SECURITY_AUDIT.md #3) so
+// Updated to match that fix (see FIXES_7.0.6_SECURITY_AUDIT.md #3) so
 // it doesn't sit here as a stale, vulnerable copy someone might
 // copy-paste from later.
 

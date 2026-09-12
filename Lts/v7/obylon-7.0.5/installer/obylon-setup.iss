@@ -4,7 +4,7 @@
 ; Production installer - compact, aligned, DPI-aware, resizable.
 ; =============================================================================
 
-#define AppVersion "7.0.5"
+#define AppVersion "7.0.6"
 #define AppName "Obylon Sentinel"
 #define Publisher "Umbraxis"
 
@@ -35,7 +35,7 @@ WizardSizePercent=110
 DisableWelcomePage=no
 
 OutputDir=dist
-OutputBaseFilename=obylon-setup-7.0.5-fixed
+OutputBaseFilename=obylon-setup-7.0.6
 UninstallDisplayIcon={app}\obylonc.exe
 
 Compression=lzma2/fast
@@ -218,9 +218,9 @@ end;
 
 procedure ConfigureMainPalette;
 begin
-  WizardForm.Color := C_PAPER;
+  // WizardForm.Color := clWindow;
   WizardForm.Font.Name := 'Segoe UI';
-  WizardForm.Font.Size := 9;
+  // WizardForm.Font.Size := 9;
   WizardForm.NextButton.Font.Name := 'Segoe UI';
   WizardForm.NextButton.Font.Style := [fsBold];
   WizardForm.CancelButton.Font.Name := 'Segoe UI';
