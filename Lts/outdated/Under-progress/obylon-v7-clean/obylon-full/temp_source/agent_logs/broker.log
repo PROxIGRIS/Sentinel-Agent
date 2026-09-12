@@ -1,0 +1,257 @@
+[1787545318] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1787545318] INFO  [broker] Privileges enabled
+[1787545319] INFO  [broker] core spawned into interactive session session_id=1 pid=27216 token_kind=shell-borrowed
+[1787573185] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1787573185] INFO  [broker] Privileges enabled
+[1787573185] WARN  [broker] No shell token to borrow in target session session_id=1
+[1787573190] INFO  [broker] core spawned into interactive session session_id=1 pid=5580 token_kind=wts-user
+[1787574471] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1787574471] INFO  [broker] Privileges enabled
+[1787574471] WARN  [broker] No shell token to borrow in target session session_id=1
+[1787574476] INFO  [broker] core spawned into interactive session session_id=1 pid=5480 token_kind=wts-user
+[1787576664] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1787576664] INFO  [broker] Privileges enabled
+[1787576664] WARN  [broker] No shell token to borrow in target session session_id=1
+[1787576669] INFO  [broker] core spawned into interactive session session_id=1 pid=5284 token_kind=wts-user
+[1787577907] INFO  [broker] core spawned into interactive session session_id=1 pid=19280 token_kind=wts-user
+[1787578368] INFO  [broker] core spawned into interactive session session_id=1 pid=10096 token_kind=wts-user
+[1787578371] INFO  [broker] core spawned into interactive session session_id=1 pid=11452 token_kind=wts-user
+[1787578374] INFO  [broker] core spawned into interactive session session_id=1 pid=3084 token_kind=wts-user
+[1787578377] INFO  [broker] core spawned into interactive session session_id=1 pid=16252 token_kind=wts-user
+[1787578380] INFO  [broker] core spawned into interactive session session_id=1 pid=21920 token_kind=wts-user
+[1787578441] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1787578441] INFO  [broker] Privileges enabled
+[1787578441] WARN  [broker] No shell token to borrow in target session session_id=1
+[1787578444] WARN  [broker] No shell token to borrow in target session session_id=1
+[1787578447] WARN  [broker] No shell token to borrow in target session session_id=1
+[1787578450] WARN  [broker] No shell token to borrow in target session session_id=1
+[1787578453] WARN  [broker] No shell token to borrow in target session session_id=1
+[1787578456] INFO  [broker] core spawned into interactive session session_id=1 pid=11824 token_kind=shell-borrowed
+[1787579862] INFO  [broker] core spawned into interactive session session_id=1 pid=20040 token_kind=wts-user
+[1787579865] INFO  [broker] core spawned into interactive session session_id=1 pid=20552 token_kind=wts-user
+[1787579868] INFO  [broker] core spawned into interactive session session_id=1 pid=18876 token_kind=wts-user
+[1787579871] INFO  [broker] core spawned into interactive session session_id=1 pid=19076 token_kind=wts-user
+[1787579874] INFO  [broker] core spawned into interactive session session_id=1 pid=21880 token_kind=wts-user
+[1787579929] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1787579929] INFO  [broker] Privileges enabled
+[1787579929] WARN  [broker] No shell token to borrow in target session session_id=1
+[1787579932] WARN  [broker] No shell token to borrow in target session session_id=1
+[1787579935] INFO  [broker] core spawned into interactive session session_id=1 pid=6420 token_kind=shell-borrowed
+[1787580837] INFO  [broker] core spawned into interactive session session_id=1 pid=13484 token_kind=wts-user
+[1787581073] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1787581073] INFO  [broker] Privileges enabled
+[1787581073] WARN  [broker] No shell token to borrow in target session session_id=1
+[1787581077] INFO  [broker] core spawned into interactive session session_id=1 pid=5576 token_kind=wts-user
+[1787658423] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1787658423] INFO  [broker] Privileges enabled
+[1787658423] ERROR [broker] session spawn failed session_id=1 error=WIN32_ERROR(1314)
+[1787658519] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1787658519] INFO  [broker] Privileges enabled
+[1787658519] INFO  [broker] core spawned into interactive session session_id=1 pid=24784 token_kind=wts-user
+[1787661149] INFO  [broker] core spawned into interactive session session_id=1 pid=25964 token_kind=wts-user
+[1787661152] INFO  [broker] core spawned into interactive session session_id=1 pid=23016 token_kind=wts-user
+[1787661155] INFO  [broker] core spawned into interactive session session_id=1 pid=19188 token_kind=wts-user
+[1787661221] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1787661221] INFO  [broker] Privileges enabled
+[1787661221] WARN  [broker] No shell token to borrow in target session session_id=1
+[1787661226] INFO  [broker] core spawned into interactive session session_id=1 pid=6004 token_kind=wts-user
+[1787661528] INFO  [broker] core spawned into interactive session session_id=1 pid=9868 token_kind=wts-user
+[1787843602] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1787843602] INFO  [broker] Privileges enabled
+[1787843602] WARN  [broker] No shell token to borrow in target session session_id=1
+[1787843605] WARN  [broker] No shell token to borrow in target session session_id=1
+[1787843608] WARN  [broker] No shell token to borrow in target session session_id=1
+[1787843612] WARN  [broker] No shell token to borrow in target session session_id=1
+[1787843615] WARN  [broker] No shell token to borrow in target session session_id=1
+[1787843618] WARN  [broker] No shell token to borrow in target session session_id=1
+[1787843621] WARN  [broker] No shell token to borrow in target session session_id=1
+[1787843625] INFO  [broker] core spawned into interactive session session_id=1 pid=7292 token_kind=shell-borrowed
+[1787897223] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1787897223] INFO  [broker] Privileges enabled
+[1787897223] INFO  [broker] core spawned into interactive session session_id=1 pid=27464 token_kind=wts-user
+[1787899495] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1787899495] INFO  [broker] Privileges enabled
+[1787899495] WARN  [broker] No shell token to borrow in target session session_id=1
+[1787899500] INFO  [broker] core spawned into interactive session session_id=1 pid=5588 token_kind=wts-user
+[1787904521] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1787904521] INFO  [broker] Privileges enabled
+[1787904522] INFO  [broker] core spawned into interactive session session_id=1 pid=5028 token_kind=wts-user
+[1787977883] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1787977883] INFO  [broker] Privileges enabled
+[1787977883] INFO  [broker] core spawned into interactive session session_id=1 pid=22116 token_kind=wts-user
+[1787979014] INFO  [broker] core spawned into interactive session session_id=1 pid=20768 token_kind=wts-user
+[1787979041] INFO  [broker] core spawned into interactive session session_id=1 pid=17124 token_kind=wts-user
+[1787979083] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1787979083] INFO  [broker] Privileges enabled
+[1787979083] INFO  [broker] core spawned into interactive session session_id=1 pid=8436 token_kind=wts-user
+[1787991290] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1787991290] INFO  [broker] Privileges enabled
+[1787991292] INFO  [broker] core spawned into interactive session session_id=1 pid=2344 token_kind=wts-user
+[1787995017] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1787995017] INFO  [broker] Privileges enabled
+[1787995017] INFO  [broker] core spawned into interactive session session_id=1 pid=16564 token_kind=wts-user
+[1787996643] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1787996643] INFO  [broker] Privileges enabled
+[1787996643] INFO  [broker] core spawned into interactive session session_id=1 pid=22020 token_kind=wts-user
+[1787997377] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1787997377] INFO  [broker] Privileges enabled
+[1787997377] INFO  [broker] core spawned into interactive session session_id=1 pid=23448 token_kind=wts-user
+[1787999530] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1787999530] INFO  [broker] Privileges enabled
+[1787999530] INFO  [broker] core spawned into interactive session session_id=1 pid=25056 token_kind=wts-user
+[1788002082] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1788002082] INFO  [broker] Privileges enabled
+[1788002082] INFO  [broker] core spawned into interactive session session_id=1 pid=8416 token_kind=wts-user
+[1788003898] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1788003898] INFO  [broker] Privileges enabled
+[1788003898] INFO  [broker] core spawned into interactive session session_id=1 pid=26176 token_kind=wts-user
+[1788006079] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1788006079] INFO  [broker] Privileges enabled
+[1788006079] INFO  [broker] core spawned into interactive session session_id=1 pid=9712 token_kind=wts-user
+[1788006523] INFO  [broker] core spawned into interactive session session_id=1 pid=23108 token_kind=wts-user
+[1788006527] INFO  [broker] core spawned into interactive session session_id=1 pid=7892 token_kind=wts-user
+[1788006530] INFO  [broker] core spawned into interactive session session_id=1 pid=1908 token_kind=wts-user
+[1788006534] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006805] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1788006805] INFO  [broker] Privileges enabled
+[1788006805] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006808] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006811] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006814] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006828] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006832] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006841] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006844] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006847] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006850] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006854] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006857] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006860] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006864] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006867] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006871] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006874] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006877] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006880] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006883] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006886] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006889] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006892] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006895] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006898] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006901] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006904] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006907] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006910] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006913] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006916] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006919] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006922] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006925] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006928] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006931] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006934] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006937] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006940] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006943] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006946] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006949] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006952] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006955] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006958] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006961] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006964] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006967] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006970] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006973] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788006976] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007056] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1788007056] INFO  [broker] Privileges enabled
+[1788007056] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007059] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007062] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007065] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007068] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007071] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007074] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007077] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007080] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007157] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1788007157] INFO  [broker] Privileges enabled
+[1788007157] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007160] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007163] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007166] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007169] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007180] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007183] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007186] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007189] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007192] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007196] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007203] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007208] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007212] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007216] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007220] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007223] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007226] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007229] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007232] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007235] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007238] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007241] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007244] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007247] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007250] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007253] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007256] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007259] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007262] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788007265] INFO  [broker] core spawned into interactive session session_id=1 pid=11884 token_kind=shell-borrowed
+[1788014842] INFO  [broker] core spawned into interactive session session_id=1 pid=17616 token_kind=wts-user
+[1788014845] INFO  [broker] core spawned into interactive session session_id=1 pid=20956 token_kind=wts-user
+[1788014848] INFO  [broker] core spawned into interactive session session_id=1 pid=8412 token_kind=wts-user
+[1788069727] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1788069727] INFO  [broker] Privileges enabled
+[1788069728] INFO  [broker] core spawned into interactive session session_id=1 pid=25992 token_kind=wts-user
+[1788089294] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1788089294] INFO  [broker] Privileges enabled
+[1788089294] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788089299] INFO  [broker] core spawned into interactive session session_id=1 pid=5872 token_kind=wts-user
+[1788091096] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1788091096] INFO  [broker] Privileges enabled
+[1788091096] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788091100] INFO  [broker] core spawned into interactive session session_id=1 pid=5728 token_kind=wts-user
+[1788092088] INFO  [broker] core spawned into interactive session session_id=1 pid=21320 token_kind=wts-user
+[1788092097] INFO  [broker] core spawned into interactive session session_id=1 pid=17224 token_kind=wts-user
+[1788092170] INFO  [broker] core spawned into interactive session session_id=1 pid=7752 token_kind=wts-user
+[1788093742] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1788093742] INFO  [broker] Privileges enabled
+[1788093742] INFO  [broker] core spawned into interactive session session_id=1 pid=4328 token_kind=wts-user
+[1788095137] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1788095137] INFO  [broker] Privileges enabled
+[1788095137] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788095141] INFO  [broker] core spawned into interactive session session_id=1 pid=5748 token_kind=wts-user
+[1788097459] INFO  [broker] core spawned into interactive session session_id=1 pid=2440 token_kind=wts-user
+[1788097697] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1788097697] INFO  [broker] Privileges enabled
+[1788097697] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788097702] INFO  [broker] core spawned into interactive session session_id=1 pid=5772 token_kind=wts-user
+[1788100208] INFO  [broker] core spawned into interactive session session_id=1 pid=7708 token_kind=wts-user
+[1788100317] INFO  [broker] core spawned into interactive session session_id=1 pid=1556 token_kind=wts-user
+[1788100978] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1788100978] INFO  [broker] Privileges enabled
+[1788100978] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788100982] INFO  [broker] core spawned into interactive session session_id=1 pid=5596 token_kind=wts-user
+[1788103479] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1788103479] INFO  [broker] Privileges enabled
+[1788103479] INFO  [broker] core spawned into interactive session session_id=1 pid=22600 token_kind=wts-user
+[1788103570] INFO  [broker] core spawned into interactive session session_id=1 pid=17000 token_kind=wts-user
+[1788103574] INFO  [broker] core spawned into interactive session session_id=1 pid=21136 token_kind=wts-user
+[1788103578] INFO  [broker] core spawned into interactive session session_id=1 pid=17292 token_kind=wts-user
+[1788103581] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788103696] INFO  [broker] Session Broker online — waiting for an interactive console session
+[1788103696] INFO  [broker] Privileges enabled
+[1788103696] WARN  [broker] No shell token to borrow in target session session_id=1
+[1788103700] INFO  [broker] core spawned into interactive session session_id=1 pid=5792 token_kind=wts-user

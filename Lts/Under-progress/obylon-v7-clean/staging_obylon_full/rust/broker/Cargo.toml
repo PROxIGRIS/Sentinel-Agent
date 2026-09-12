@@ -1,0 +1,32 @@
+[package]
+name = "obylon-broker"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ObylonBroker"
+path = "src/main.rs"
+
+[dependencies]
+obylon-common = { path = "../common" }
+
+# Verified against the live crates.io index (0.61.2 was yanked; 0.62.2 is
+# current as of this writing) and the real published feature list — these
+# are the exact feature names, not guessed. Could not cross-compile this
+# against an actual Windows target in the environment this was written in
+# (no windows toolchain available), so treat the *feature list* as solid
+# and the exact function-call signatures in main.rs as "written from
+# well-established API knowledge, not compiler-verified" — see the build
+# notes in the accompanying message for what to check first if `cargo
+# build` complains about a missing symbol.
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_Threading",
+    "Win32_System_Environment",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_UI_WindowsAndMessaging",
+]

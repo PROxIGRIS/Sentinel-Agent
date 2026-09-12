@@ -1,0 +1,495 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-05T00:08:02Z",
+  "description": "Obylon Ad Network & Monetization Reputation Database. Maps infrastructural entities for signal correlation.",
+  "scoring": {
+    "recommended_score_range": [
+      0.0,
+      1.0
+    ],
+    "confidence_range": [
+      0.0,
+      1.0
+    ]
+  },
+  "networks": [
+    {
+      "network_id": "trafficjunky",
+      "name": "TrafficJunky",
+      "category": "adult_advertising",
+      "confidence": 0.98,
+      "recommended_score": 0.95,
+      "mixed_usage": false,
+      "automatic_block": false,
+      "match_type": "registrable_domain",
+      "domains": [
+        "trafficjunky.com",
+        "trafficjunky.net",
+        "tjcontent.com"
+      ],
+      "aliases": [
+        "MindGeek Ads",
+        "Aylo Ads"
+      ],
+      "evidence_type": [
+        "direct_adult_network",
+        "public_filter_list"
+      ],
+      "notes": "Primary monetization engine for the Aylo/MindGeek portfolio (Pornhub, YouPorn, etc.). Almost exclusively adult traffic.",
+      "sources": [
+        {
+          "title": "EasyList / EasyPrivacy",
+          "url": "https://easylist.to/easylist/easyprivacy.txt",
+          "source_type": "public_filter_list",
+          "accessed": "2026-09-05"
+        },
+        {
+          "title": "TrafficJunky Corporate",
+          "url": "https://www.trafficjunky.com",
+          "source_type": "direct_adult_network",
+          "accessed": "2026-09-05"
+        }
+      ]
+    },
+    {
+      "network_id": "exoclick",
+      "name": "ExoClick",
+      "category": "adult_advertising",
+      "confidence": 0.95,
+      "recommended_score": 0.9,
+      "mixed_usage": true,
+      "automatic_block": false,
+      "match_type": "registrable_domain",
+      "domains": [
+        "exoclick.com",
+        "realsrv.com"
+      ],
+      "aliases": [
+        "EXO"
+      ],
+      "evidence_type": [
+        "direct_adult_network",
+        "public_filter_list"
+      ],
+      "notes": "One of the largest adult ad networks globally. Officially 'mixed' as they have mainstream divisions, but vast majority of footprint is adult/dating/streaming.",
+      "sources": [
+        {
+          "title": "ExoClick Official",
+          "url": "https://www.exoclick.com",
+          "source_type": "direct_adult_network",
+          "accessed": "2026-09-05"
+        },
+        {
+          "title": "EasyList Blocking Filters",
+          "url": "https://easylist.to/easylist/easyprivacy.txt",
+          "source_type": "public_filter_list",
+          "accessed": "2026-09-05"
+        }
+      ]
+    },
+    {
+      "network_id": "juicyads",
+      "name": "JuicyAds",
+      "category": "adult_advertising",
+      "confidence": 0.98,
+      "recommended_score": 0.95,
+      "mixed_usage": false,
+      "automatic_block": false,
+      "match_type": "registrable_domain",
+      "domains": [
+        "juicyads.com",
+        "juicyads.in"
+      ],
+      "aliases": [],
+      "evidence_type": [
+        "direct_adult_network",
+        "public_filter_list"
+      ],
+      "notes": "Self-proclaimed 'spicy' ad network. Pure adult traffic and monetization.",
+      "sources": [
+        {
+          "title": "Peter Lowe's Ad and tracking server list",
+          "url": "https://pgl.yoyo.org/adservers/",
+          "source_type": "public_filter_list",
+          "accessed": "2026-09-05"
+        }
+      ]
+    },
+    {
+      "network_id": "trafficfactory",
+      "name": "TrafficFactory",
+      "category": "adult_advertising",
+      "confidence": 0.98,
+      "recommended_score": 0.95,
+      "mixed_usage": false,
+      "automatic_block": false,
+      "match_type": "registrable_domain",
+      "domains": [
+        "trafficfactory.com",
+        "trafficfactory.biz"
+      ],
+      "aliases": [],
+      "evidence_type": [
+        "direct_adult_network"
+      ],
+      "notes": "Exclusive ad network for XVideos and XNXX. Pure adult footprint.",
+      "sources": [
+        {
+          "title": "TrafficFactory Corporate",
+          "url": "https://www.trafficfactory.com",
+          "source_type": "direct_adult_network",
+          "accessed": "2026-09-05"
+        }
+      ]
+    },
+    {
+      "network_id": "eroadvertising",
+      "name": "EroAdvertising",
+      "category": "adult_advertising",
+      "confidence": 0.98,
+      "recommended_score": 0.95,
+      "mixed_usage": false,
+      "automatic_block": false,
+      "match_type": "registrable_domain",
+      "domains": [
+        "ero-advertising.com"
+      ],
+      "aliases": [
+        "EroAds"
+      ],
+      "evidence_type": [
+        "direct_adult_network"
+      ],
+      "notes": "Adult and dating focused global advertising network.",
+      "sources": [
+        {
+          "title": "AdGuard Tracking Filter",
+          "url": "https://kb.adguard.com/en/general/adguard-ad-filters",
+          "source_type": "public_filter_list",
+          "accessed": "2026-09-05"
+        }
+      ]
+    },
+    {
+      "network_id": "plugrush",
+      "name": "PlugRush",
+      "category": "adult_advertising",
+      "confidence": 0.98,
+      "recommended_score": 0.95,
+      "mixed_usage": false,
+      "automatic_block": false,
+      "match_type": "registrable_domain",
+      "domains": [
+        "plugrush.com"
+      ],
+      "aliases": [],
+      "evidence_type": [
+        "direct_adult_network"
+      ],
+      "notes": "Adult webmaster traffic trading and ad network.",
+      "sources": [
+        {
+          "title": "StevenBlack Hosts File",
+          "url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+          "source_type": "public_filter_list",
+          "accessed": "2026-09-05"
+        }
+      ]
+    },
+    {
+      "network_id": "traffichunt",
+      "name": "TrafficHunt",
+      "category": "adult_advertising",
+      "confidence": 0.97,
+      "recommended_score": 0.9,
+      "mixed_usage": false,
+      "automatic_block": false,
+      "match_type": "registrable_domain",
+      "domains": [
+        "traffichunt.com"
+      ],
+      "aliases": [],
+      "evidence_type": [
+        "direct_adult_network"
+      ],
+      "notes": "Premium adult ad network specializing in dating and tube site traffic.",
+      "sources": [
+        {
+          "title": "EasyPrivacy",
+          "url": "https://easylist.to/easylist/easyprivacy.txt",
+          "source_type": "public_filter_list",
+          "accessed": "2026-09-05"
+        }
+      ]
+    },
+    {
+      "network_id": "crakrevenue",
+      "name": "CrakRevenue",
+      "category": "adult_affiliate",
+      "confidence": 0.99,
+      "recommended_score": 0.85,
+      "mixed_usage": false,
+      "automatic_block": false,
+      "match_type": "registrable_domain",
+      "domains": [
+        "crakrevenue.com"
+      ],
+      "aliases": [],
+      "evidence_type": [
+        "adult_affiliate"
+      ],
+      "notes": "CPA affiliate network heavily dedicated to adult, cam, and dating verticals.",
+      "sources": [
+        {
+          "title": "CrakRevenue Corporate",
+          "url": "https://www.crakrevenue.com",
+          "source_type": "adult_affiliate",
+          "accessed": "2026-09-05"
+        }
+      ]
+    },
+    {
+      "network_id": "awempire",
+      "name": "Awempire",
+      "category": "adult_affiliate",
+      "confidence": 0.99,
+      "recommended_score": 0.85,
+      "mixed_usage": false,
+      "automatic_block": false,
+      "match_type": "registrable_domain",
+      "domains": [
+        "awempire.com"
+      ],
+      "aliases": [
+        "LiveJasmin Affiliates"
+      ],
+      "evidence_type": [
+        "adult_affiliate"
+      ],
+      "notes": "Official affiliate tracking network for LiveJasmin and Awesomo ecosystem.",
+      "sources": [
+        {
+          "title": "EasyList Blocklist",
+          "url": "https://easylist.to/easylist/easyprivacy.txt",
+          "source_type": "public_filter_list",
+          "accessed": "2026-09-05"
+        }
+      ]
+    },
+    {
+      "network_id": "bongacash",
+      "name": "BongaCash",
+      "category": "adult_affiliate",
+      "confidence": 0.99,
+      "recommended_score": 0.85,
+      "mixed_usage": false,
+      "automatic_block": false,
+      "match_type": "registrable_domain",
+      "domains": [
+        "bongacash.com"
+      ],
+      "aliases": [
+        "BongaCams Affiliates"
+      ],
+      "evidence_type": [
+        "adult_affiliate"
+      ],
+      "notes": "Official affiliate network for BongaCams. Common tracking pixel on adult hubs.",
+      "sources": [
+        {
+          "title": "BongaCash Documentation",
+          "url": "https://bongacash.com",
+          "source_type": "adult_affiliate",
+          "accessed": "2026-09-05"
+        }
+      ]
+    },
+    {
+      "network_id": "propellerads",
+      "name": "PropellerAds",
+      "category": "popunder",
+      "confidence": 0.8,
+      "recommended_score": 0.4,
+      "mixed_usage": true,
+      "automatic_block": false,
+      "match_type": "registrable_domain",
+      "domains": [
+        "propellerads.com",
+        "onclickalgo.com"
+      ],
+      "aliases": [],
+      "evidence_type": [
+        "mixed_usage",
+        "redirect_observation"
+      ],
+      "notes": "Mainstream ad network known for aggressive popunder and push formats. Heavily utilized by streaming/piracy and some adult sites. Score reduced due to massive legitimate footprints.",
+      "sources": [
+        {
+          "title": "AdGuard / EasyList",
+          "url": "https://kb.adguard.com/en/general/adguard-ad-filters",
+          "source_type": "public_filter_list",
+          "accessed": "2026-09-05"
+        }
+      ]
+    },
+    {
+      "network_id": "popads",
+      "name": "PopAds",
+      "category": "popunder",
+      "confidence": 0.85,
+      "recommended_score": 0.5,
+      "mixed_usage": true,
+      "automatic_block": false,
+      "match_type": "registrable_domain",
+      "domains": [
+        "popads.net"
+      ],
+      "aliases": [],
+      "evidence_type": [
+        "mixed_usage",
+        "redirect_observation"
+      ],
+      "notes": "Specializes in popunder traffic. Highly prevalent in gray-market sites and adult ecosystems. Mixed usage applies.",
+      "sources": [
+        {
+          "title": "Peter Lowe's List",
+          "url": "https://pgl.yoyo.org/adservers/",
+          "source_type": "public_filter_list",
+          "accessed": "2026-09-05"
+        }
+      ]
+    },
+    {
+      "network_id": "adsterra",
+      "name": "Adsterra",
+      "category": "aggressive_advertising",
+      "confidence": 0.75,
+      "recommended_score": 0.35,
+      "mixed_usage": true,
+      "automatic_block": false,
+      "match_type": "registrable_domain",
+      "domains": [
+        "adsterra.com"
+      ],
+      "aliases": [],
+      "evidence_type": [
+        "security_research",
+        "mixed_usage"
+      ],
+      "notes": "Offers Social Bar, popunders, and push notifications. Frequently associated with aggressive redirects and adult-adjacent properties. Severely down-scored to prevent false positives.",
+      "sources": [
+        {
+          "title": "EasyList Blocklist",
+          "url": "https://easylist.to/easylist/easyprivacy.txt",
+          "source_type": "public_filter_list",
+          "accessed": "2026-09-05"
+        }
+      ]
+    },
+    {
+      "network_id": "clickadu",
+      "name": "Clickadu",
+      "category": "popunder",
+      "confidence": 0.8,
+      "recommended_score": 0.45,
+      "mixed_usage": true,
+      "automatic_block": false,
+      "match_type": "registrable_domain",
+      "domains": [
+        "clickadu.com"
+      ],
+      "aliases": [],
+      "evidence_type": [
+        "mixed_usage"
+      ],
+      "notes": "360-degree ad network known for popunders and pre-rolls. High intersection with adult and torrent ecosystems.",
+      "sources": [
+        {
+          "title": "StevenBlack Hosts File",
+          "url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+          "source_type": "public_filter_list",
+          "accessed": "2026-09-05"
+        }
+      ]
+    },
+    {
+      "network_id": "popcash",
+      "name": "PopCash",
+      "category": "popunder",
+      "confidence": 0.85,
+      "recommended_score": 0.5,
+      "mixed_usage": true,
+      "automatic_block": false,
+      "match_type": "registrable_domain",
+      "domains": [
+        "popcash.net"
+      ],
+      "aliases": [],
+      "evidence_type": [
+        "mixed_usage",
+        "redirect_observation"
+      ],
+      "notes": "Direct competitor to PopAds. Same footprint model.",
+      "sources": [
+        {
+          "title": "Peter Lowe's List",
+          "url": "https://pgl.yoyo.org/adservers/",
+          "source_type": "public_filter_list",
+          "accessed": "2026-09-05"
+        }
+      ]
+    },
+    {
+      "network_id": "hilltopads",
+      "name": "HilltopAds",
+      "category": "popunder",
+      "confidence": 0.75,
+      "recommended_score": 0.4,
+      "mixed_usage": true,
+      "automatic_block": false,
+      "match_type": "registrable_domain",
+      "domains": [
+        "hilltopads.com"
+      ],
+      "aliases": [],
+      "evidence_type": [
+        "mixed_usage"
+      ],
+      "notes": "Global ad network targeting gray-market sites. Heavy push notification and popunder traffic.",
+      "sources": [
+        {
+          "title": "EasyPrivacy",
+          "url": "https://easylist.to/easylist/easyprivacy.txt",
+          "source_type": "public_filter_list",
+          "accessed": "2026-09-05"
+        }
+      ]
+    },
+    {
+      "network_id": "runative",
+      "name": "Runative",
+      "category": "adult_advertising",
+      "confidence": 0.9,
+      "recommended_score": 0.8,
+      "mixed_usage": false,
+      "automatic_block": false,
+      "match_type": "registrable_domain",
+      "domains": [
+        "runative.com"
+      ],
+      "aliases": [],
+      "evidence_type": [
+        "direct_adult_network"
+      ],
+      "notes": "Native ad network tailored heavily toward dating, cam, and adult gaming verticals.",
+      "sources": [
+        {
+          "title": "Runative Corporate",
+          "url": "https://runative.com",
+          "source_type": "direct_adult_network",
+          "accessed": "2026-09-05"
+        }
+      ]
+    }
+  ]
+}

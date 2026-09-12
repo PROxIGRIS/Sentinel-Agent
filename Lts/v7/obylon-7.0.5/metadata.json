@@ -1,0 +1,6 @@
+{
+    "build_date": "2026-09-07T00:00:00Z",
+    "build_number": "7.0.5-202609070000",
+    "description": "Obylon Full Source Release — 7.0.5 LTS stabilization: node reconciliation + reliable command dispatch + persistent rename + tester boot-race/shutdown latency fixes + security-audit hardening (RLS lockdown, local authz pinning, Core boot/ACL fix, Brain identity pinning, fast-lane floor)",
+    "status": "Source-fixed LTS revision; Windows rebuild required; Supabase RLS migration must be applied per project (see database-map/db_rls_fixes.sql)"
+}

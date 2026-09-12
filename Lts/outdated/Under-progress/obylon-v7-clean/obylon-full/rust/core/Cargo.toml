@@ -1,0 +1,53 @@
+[package]
+name = "obylon-core"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ObylonCore"
+path = "src/main.rs"
+
+[dependencies]
+obylon-common = { path = "../common" }
+serde_json = "1"
+
+# JPEG encoding only — default-features off so we don't drag in every
+# other image codec this binary will never touch.
+[dependencies.image]
+version = "0.24"
+default-features = false
+features = ["jpeg"]
+
+# Same caveat as broker/Cargo.toml: feature names verified against the
+# live crates.io index, exact call signatures in main.rs not
+# compiler-verified against a real Windows target in this environment.
+# Media Foundation (webcam) in particular is COM-heavy and is the single
+# highest-risk block in this file — see the build notes in the
+# accompanying message.
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_Pipes",
+    "Win32_Storage_FileSystem",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Accessibility",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+    "Win32_Networking_WinHttp",
+    "Win32_System_IO",
+    "Win32_Security",
+    "Win32_UI_HiDpi",
+]
+
+[dependencies.serde]
+version = "1"
+features = ["derive"]

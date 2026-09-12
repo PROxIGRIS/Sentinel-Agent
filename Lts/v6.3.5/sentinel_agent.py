@@ -449,10 +449,19 @@ LICENSE_INVALID_EVENT = threading.Event()
 
 def _build_supabase_client():
     global ACCESS_TOKEN, REFRESH_TOKEN
+    import ssl, urllib.request, urllib.error
+    use_proxy = True
+    try:
+        ctx = ssl.create_default_context(cafile=certifi.where())
+        urllib.request.urlopen(urllib.request.Request(SUPABASE_URL, method="HEAD"), context=ctx, timeout=5.0)
+    except Exception as e:
+        if "10013" in str(e) or "10061" in str(e) or "proxy" in str(e).lower():
+            use_proxy = False
+
     # School Supabase endpoints have standard Let's Encrypt certificates, so verify=certifi.where() is completely safe and required.
     client = create_client(
         SUPABASE_URL, SUPABASE_KEY,
-        options=ClientOptions(httpx_client=httpx.Client(verify=certifi.where(), timeout=30.0), auto_refresh_token=True, persist_session=False)
+        options=ClientOptions(httpx_client=httpx.Client(verify=certifi.where(), timeout=30.0, trust_env=use_proxy), auto_refresh_token=True, persist_session=False)
     )
     # Set the session from vault credentials
     if ACCESS_TOKEN and REFRESH_TOKEN:
@@ -567,7 +576,20 @@ class ObylonVault:
             )
             import ssl, certifi
             context = ssl.create_default_context(cafile=certifi.where())
-            with urllib.request.urlopen(req, context=context) as response:
+            
+            # Robust proxy handling: Try with system proxies first
+            try:
+                opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))
+                response = opener.open(req, timeout=30.0)
+            except Exception as e:
+                if "10013" in str(e) or "10061" in str(e) or "proxy" in str(e).lower():
+                    logger.warning(f"Activation hit proxy error ({e}). Retrying with proxies disabled.", component="vault")
+                    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=context))
+                    response = opener.open(req, timeout=30.0)
+                else:
+                    raise
+            
+            with response:
                 body = response.read().decode("utf-8")
                 data = json.loads(body)
                 
@@ -5066,7 +5088,20 @@ def license_heartbeat_loop(workstation_id: str):
             )
             import ssl, certifi
             context = ssl.create_default_context(cafile=certifi.where())
-            with urllib.request.urlopen(req, context=context) as response:
+            
+            # Robust proxy handling: Try with system proxies first
+            try:
+                opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))
+                response = opener.open(req, timeout=30.0)
+            except Exception as e:
+                if "10013" in str(e) or "10061" in str(e) or "proxy" in str(e).lower():
+                    logger.warning(f"Heartbeat proxy error ({e}). Retrying with proxies disabled.", component="license")
+                    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=context))
+                    response = opener.open(req, timeout=30.0)
+                else:
+                    raise
+            
+            with response:
                 data = json.loads(response.read().decode("utf-8"))
                 
                 # Cryptographic offline enforcement check

@@ -1,0 +1,41 @@
+{\rtf1\ansi\ansicpg1252\deff0\nouicompat\deflang1033{\fonttbl{\f0\fnil\fcharset0 Calibri;}}
+{\*\generator Riched20 10.0.19041}\viewkind4\uc1 
+\pard\sa200\sl276\slmult1\b\f0\fs32 Obylon Sentinel MSI Deployment Guide\b0\fs22\par
+\par
+\b 1. System Requirements & Security Posture\b0\par
+Because the Obylon Sentinel Agent leverages low-level OS hooks (Win32 API) for monitoring and enforcement, most EDRs and Anti-Virus solutions (including Windows Defender) will initially flag the installation as a false positive. This is expected behavior for this class of software and does not indicate a problem with the build.\par
+\par
+\b PRE-DEPLOYMENT ACTION:\b0 Before proceeding, your IT Administrator MUST add the following paths to the AV exclusion list across your fleet:\par
+ - C:\\Program Files\\Obylon\\Sentinel\\*\par
+ - C:\\ProgramData\\Obylon\\*\par
+\par
+Failure to do so will result in the AV quarantining obylon.exe and rendering the monitoring dead.\par
+\par
+\b VERIFYING THIS IS THE REAL BUILD:\b0 Before excluding anything from your AV, confirm what you're excluding.\par
+ - This release is code-signed. Right-click obylon.exe, choose Properties, then the Digital Signatures tab, and confirm the signer is [Your Company / Publisher Name]. An unsigned obylon.exe is a reason to stop and contact us, not a reason to proceed.\par
+ - The published SHA-256 checksum for this release is listed on your download page / release notes. The installer verifies this automatically during setup and will fail the install rather than run a file that doesn't match \emdash if setup fails on the download step, do not manually retry with AV disabled; contact support instead.\par
+\par
+\b IF YOUR ANTI-VIRUS OR EDR IS CENTRALLY MANAGED:\b0 many districts run Microsoft Defender for Business, Sophos Central, or similar tools where a single technician cannot add an exclusion locally, or where Tamper Protection blocks local changes entirely. A local exclusion attempt may appear to work but get silently overwritten by policy shortly after. If that describes your environment, this request needs to go to your district's security/network team \emdash see the accompanying \i IT Escalation Kit\i0 for a ready-to-forward request and centrally-deployable exclusion policies (Intune, GPO, and a PowerShell one-liner) so this can be pushed fleet-wide instead of machine-by-machine.\par
+\par
+\b IF DEFENDER STILL FLAGS A SIGNED, VERIFIED BUILD:\b0 please also report it to Microsoft so their models learn it's clean for every other Defender-protected machine, not just yours: https://www.microsoft.com/wdsi/filesubmission. Send us a copy of your submission ID and we'll follow up on our end as the publisher.\par
+\par
+\b 2. Zero-Touch Fleet Provisioning (Master Image Seed)\b0\par
+If you select "Fleet Image" during this install, or deploy silently, you can use the Fleet Seed mode.\par
+ 1. Drop your enterprise license key into this exact file: C:\\ProgramData\\Obylon\\license_seed.txt\par
+ 2. Do this BEFORE booting the agent.\par
+ 3. When the agent starts, it will detect the seed file, securely provision a unique hardware UUID against the backend, and delete the seed file.\par
+\par
+\b CAUTION:\b0 DO NOT activate the agent and THEN capture a master Windows image for cloning! You MUST clone the image with the raw license_seed.txt file in place, not an activated vault. Otherwise, the backend will instantly reject the duplicate endpoints. Run \i obylon prep-for-image\i0 before sysprep/capture to confirm the machine is in the correct un-activated seed state.\par
+\par
+\b 3. The obylon Management CLI\b0\par
+This MSI automatically registers C:\\Program Files\\Obylon\\Sentinel\\ to the global Windows PATH. You can open an elevated Command Prompt or PowerShell and manage the agent using the 'obylon' command.\par
+\par
+Available Commands:\par
+ - obylon activate OBY-XXXX-XXXX-XXXX\par
+ - obylon status\par
+ - obylon diagnose --dev\par
+ - obylon deactivate\par
+ - obylon support-bundle\par
+\par
+By clicking "I accept the terms in the License Agreement", you acknowledge that you have read and understood these deployment requirements.\par
+}

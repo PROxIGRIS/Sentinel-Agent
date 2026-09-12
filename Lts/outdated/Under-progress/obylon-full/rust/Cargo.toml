@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["common", "broker", "core"]
+
+# Keep binaries small and startup-fast — these run at boot and inside a
+# student's interactive session, respectively. Nobody's waiting on a
+# progress bar for either.
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

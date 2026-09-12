@@ -1,0 +1,6 @@
+{
+    "build_date": "2026-09-06T06:30:00Z",
+    "build_number": "7.0.5-202609061200",
+    "description": "Obylon Full Source Release — 7.0.5 LTS stabilization: machine-bound node identity + idempotent node reconciliation + reliable admin command dispatch + persistent rename + tester boot-race/shutdown latency fixes",
+    "status": "Source-fixed LTS revision; Windows rebuild required"
+}
