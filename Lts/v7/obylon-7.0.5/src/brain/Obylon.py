@@ -360,7 +360,7 @@ class SessionManager:
                     ctx = ssl.create_default_context(cafile=certifi.where())
                     urllib.request.urlopen(urllib.request.Request(SUPABASE_URL, method="HEAD"), context=ctx, timeout=5.0)
                 except Exception as e:
-                    if "10013" in str(e) or "10061" in str(e) or "proxy" in str(e).lower():
+                    if "10013" in str(e) or "10061" in str(e) or "proxy" in str(e).lower() or isinstance(e, (TimeoutError, urllib.error.URLError)):
                         use_proxy = False
                         
                 # School Supabase endpoints have standard Let's Encrypt certificates.
@@ -437,7 +437,7 @@ class SessionManager:
                         ctx = ssl.create_default_context(cafile=certifi.where())
                         urllib.request.urlopen(urllib.request.Request(SUPABASE_URL, method="HEAD"), context=ctx, timeout=5.0)
                     except Exception as e:
-                        if "10013" in str(e) or "10061" in str(e) or "proxy" in str(e).lower():
+                        if "10013" in str(e) or "10061" in str(e) or "proxy" in str(e).lower() or isinstance(e, (TimeoutError, urllib.error.URLError)):
                             use_proxy = False
                     
                     client = create_client(

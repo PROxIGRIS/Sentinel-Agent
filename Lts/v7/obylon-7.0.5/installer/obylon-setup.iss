@@ -9,6 +9,7 @@
 #define Publisher "Umbraxis"
 
 [Setup]
+ArchitecturesAllowed=x64compatible
 AppId={{F9A8B7C6-D5E4-F3A2-B1C0-123456789ABC}
 AppName={#AppName}
 AppVersion={#AppVersion}
@@ -73,6 +74,23 @@ Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environmen
     Check: NeedsAddPath(ExpandConstant('{app}'))
 
 [Code]
+
+var
+  DownloadPage: TDownloadWizardPage;
+
+function VCInstalled(Is64Bit: Boolean): Boolean;
+var
+  Key: String;
+  Bld: Cardinal;
+begin
+  if Is64Bit then
+    Key := 'SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64'
+  else
+    Key := 'SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x86';
+  
+  Result := RegQueryDWordValue(HKEY_LOCAL_MACHINE, Key, 'Bld', Bld);
+end;
+
 function RunHiddenCommand(const Filename, Parameters: string; var ResultCode: Integer): Boolean;
 begin
   Result := Exec(ExpandConstant('{sys}\cmd.exe'), '/c "' + Filename + ' ' + Parameters + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
@@ -588,8 +606,76 @@ begin
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  NeedsVC64, NeedsVC32: Boolean;
+  ResultCode: Integer;
 begin
   Result := True;
+  
+  if CurPageID = wpWelcome then
+  begin
+    NeedsVC64 := not VCInstalled(True);
+    NeedsVC32 := not VCInstalled(False);
+    
+    if NeedsVC64 or NeedsVC32 then
+    begin
+      if MsgBox('Obylon requires the Microsoft Visual C++ Redistributable 2015-2022 to function properly.'#13#10#13#10 +
+                'It appears to be missing on your system.'#13#10#13#10 +
+                'Would you like to automatically download and install it now? (Recommended)', mbConfirmation, MB_YESNO) = IDNO then
+      begin
+        MsgBox('Installation cannot continue without the required dependencies. Obylon Broker and Core will crash on launch if the Visual C++ runtime is missing.', mbCriticalError, MB_OK);
+        Result := False;
+        Exit;
+      end;
+      
+      DownloadPage.Clear;
+      if NeedsVC64 then
+        DownloadPage.Add('https://aka.ms/vs/17/release/vc_redist.x64.exe', 'vc_redist.x64.exe', '');
+      if NeedsVC32 then
+        DownloadPage.Add('https://aka.ms/vs/17/release/vc_redist.x86.exe', 'vc_redist.x86.exe', '');
+        
+      DownloadPage.Show;
+      try
+        try
+          DownloadPage.Download;
+        except
+          MsgBox('Failed to download the dependencies. Please check your internet connection.', mbCriticalError, MB_OK);
+          Result := False;
+          Exit;
+        end;
+      finally
+        DownloadPage.Hide;
+      end;
+      
+      if NeedsVC64 then
+      begin
+        if not Exec(ExpandConstant('{tmp}\vc_redist.x64.exe'), '/install /quiet /norestart', '', SW_SHOW, ewWaitUntilTerminated, ResultCode) then
+        begin
+          MsgBox('Failed to install the 64-bit Visual C++ runtime.', mbError, MB_OK);
+          Result := False;
+          Exit;
+        end;
+      end;
+      
+      if NeedsVC32 then
+      begin
+        if not Exec(ExpandConstant('{tmp}\vc_redist.x86.exe'), '/install /quiet /norestart', '', SW_SHOW, ewWaitUntilTerminated, ResultCode) then
+        begin
+          MsgBox('Failed to install the 32-bit Visual C++ runtime.', mbError, MB_OK);
+          Result := False;
+          Exit;
+        end;
+      end;
+      
+      if (NeedsVC64 and not VCInstalled(True)) or (NeedsVC32 and not VCInstalled(False)) then
+      begin
+        MsgBox('The dependency installation did not complete successfully. Setup will abort.', mbError, MB_OK);
+        Result := False;
+        Exit;
+      end;
+    end;
+  end;
+
   if (Assigned(LicensePage)) and (CurPageID = LicensePage.ID) then
   begin
     if Trim(LicensePage.Values[0]) = '' then
@@ -635,5 +721,6 @@ begin
   ConfigureMainPalette;
   // BuildConfigPage;
   BuildLicensePage;
+  DownloadPage := CreateDownloadPage(SetupMessage(msgWizardPreparing), SetupMessage(msgPreparingDesc), nil);
 end;
 
