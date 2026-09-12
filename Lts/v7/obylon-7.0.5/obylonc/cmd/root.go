@@ -39,7 +39,7 @@ var (
 	Version     = "7.0.6-LTS"
 	BuildDate   = "2026-09-05"
 	BuildNumber = "7.0.6-202609061200"
-	Commit      = "session-broker+provenance+multilingual+recovery-intelligence+vault-integrity+ad-network-reputation+adaptive-scan-pressure+installer-activation+cli-admin-scope"
+	Commit      = "f12411e"
 )
 
 func runVersion(args []string) int {
@@ -102,14 +102,15 @@ type commandEntry struct {
 // help, `admin`, and `auth request` aligned instead of maintaining several
 // subtly different command lists.
 var commands = map[string]commandEntry{
-	"activate":             {run: runActivate, brief: "Activate this workstation with a license key", scope: "license", action: "obylon.license.activate", admin: true},
-	"login":                {run: runLogin, brief: "Authenticate the CLI via browser (Device Code)", scope: "auth", action: "obylon.session.connect", admin: true},
-	"status":               {run: runStatus, brief: "Print license, node, and authorization status", scope: "read", action: "obylon.inspect", admin: false},
-	"diagnose":             {run: runDiagnose, brief: "Run connectivity, token, and signature diagnostics", scope: "diagnose", action: "obylon.diagnose", admin: false},
-	"doctor":               {run: runDoctor, brief: "Health check, profiling, or safe repair", scope: "diagnose/update", action: "obylon.agent.update", admin: false},
-	"logs":                 {run: runLogs, brief: "Tail or follow the agent's live log", scope: "evidence", action: "obylon.evidence.read", admin: false},
-	"broker-logs":          {run: runBrokerLogs, brief: "Tail or follow the broker's live log", scope: "evidence", action: "obylon.evidence.read", admin: false},
-	"core-logs":            {run: runCoreLogs, brief: "Tail or follow the core's live log", scope: "evidence", action: "obylon.evidence.read", admin: false},
+	"activate":     {run: runActivate, brief: "Activate this workstation with a license key", scope: "license", action: "obylon.license.activate", admin: true},
+	"login":        {run: runLogin, brief: "Authenticate the CLI via browser (Device Code)", scope: "auth", action: "obylon.session.connect", admin: true},
+	"status":       {run: runStatus, brief: "Print license, node, and authorization status", scope: "read", action: "obylon.inspect", admin: false},
+	"diagnose":     {run: runDiagnose, brief: "Run connectivity, token, and signature diagnostics", scope: "diagnose", action: "obylon.diagnose", admin: false},
+	"troubleshoot": {run: runTroubleshoot, brief: "Deep dive smart diagnostic engine for boot/spawn failures", scope: "diagnose", action: "obylon.diagnose", admin: true},
+	"doctor":       {run: runDoctor, brief: "Health check, profiling, or safe repair", scope: "diagnose/update", action: "obylon.agent.update", admin: false},
+	"logs":         {run: runLogs, brief: "Tail or follow the agent's live log", scope: "evidence", action: "obylon.evidence.read", admin: false},
+	"broker-logs":  {run: runBrokerLogs, brief: "Tail or follow the broker's live log", scope: "evidence", action: "obylon.evidence.read", admin: false},
+	"core-logs":    {run: runCoreLogs, brief: "Tail or follow the core's live log", scope: "evidence", action: "obylon.evidence.read", admin: false},
 	// "logs":                 {run: runLogs, brief: "Tail or follow the agent's live log", scope: "evidence", action: "obylon.evidence.read", admin: false},
 	"ai":                   {run: runAI, brief: "Ask the Obylon Support AI", scope: "read", action: "obylon.inspect", admin: false},
 	"boot":                 {run: runBoot, brief: "Check or change startup behavior", scope: "update", action: "obylon.boot.enable|obylon.boot.disable", admin: true},
@@ -132,14 +133,15 @@ var commandOrder = []string{
 // namespace does not create an initialization cycle in the command registry.
 // It also makes the privileged surface explicit.
 var adminOperational = map[string]commandEntry{
-	"activate":       {run: runActivate, brief: "Provision a license", scope: "license", action: "obylon.license.activate", admin: true},
-	"login":          {run: runLogin, brief: "Authenticate the technician session", scope: "auth", action: "obylon.session.connect", admin: true},
-	"status":         {run: runStatus, brief: "Inspect license and node state", scope: "read", action: "obylon.inspect", admin: true},
-	"diagnose":       {run: runDiagnose, brief: "Run endpoint diagnostics", scope: "diagnose", action: "obylon.diagnose", admin: true},
-	"doctor":         {run: runDoctor, brief: "Health check / safe repair", scope: "diagnose/update", action: "obylon.agent.update", admin: true},
-	"logs":           {run: runLogs, brief: "Inspect agent logs", scope: "evidence", action: "obylon.evidence.read", admin: true},
-	"broker-logs":    {run: runBrokerLogs, brief: "Inspect broker logs", scope: "evidence", action: "obylon.evidence.read", admin: true},
-	"core-logs":      {run: runCoreLogs, brief: "Inspect core logs", scope: "evidence", action: "obylon.evidence.read", admin: true},
+	"activate":     {run: runActivate, brief: "Provision a license", scope: "license", action: "obylon.license.activate", admin: true},
+	"login":        {run: runLogin, brief: "Authenticate the technician session", scope: "auth", action: "obylon.session.connect", admin: true},
+	"status":       {run: runStatus, brief: "Inspect license and node state", scope: "read", action: "obylon.inspect", admin: true},
+	"diagnose":     {run: runDiagnose, brief: "Run endpoint diagnostics", scope: "diagnose", action: "obylon.diagnose", admin: true},
+	"troubleshoot": {run: runTroubleshoot, brief: "Deep dive smart diagnostic engine", scope: "diagnose", action: "obylon.diagnose", admin: true},
+	"doctor":       {run: runDoctor, brief: "Health check / safe repair", scope: "diagnose/update", action: "obylon.agent.update", admin: true},
+	"logs":         {run: runLogs, brief: "Inspect agent logs", scope: "evidence", action: "obylon.evidence.read", admin: true},
+	"broker-logs":  {run: runBrokerLogs, brief: "Inspect broker logs", scope: "evidence", action: "obylon.evidence.read", admin: true},
+	"core-logs":    {run: runCoreLogs, brief: "Inspect core logs", scope: "evidence", action: "obylon.evidence.read", admin: true},
 	// "logs":           {run: runLogs, brief: "Inspect agent logs", scope: "evidence", action: "obylon.evidence.read", admin: true},
 	"ai":             {run: runAI, brief: "Ask support AI", scope: "read", action: "obylon.inspect", admin: true},
 	"support-bundle": {run: runSupportBundle, brief: "Collect diagnostics", scope: "diagnose/evidence", action: "obylon.evidence.read", admin: true},
@@ -249,6 +251,7 @@ func printHelp() {
 		"  login          Authenticate the technician session",
 		"  status         Show license, node, and auth state",
 		"  diagnose       Run connectivity and signature diagnostics",
+		"  troubleshoot   Deep dive smart diagnostic engine for boot/spawn failures",
 		"  doctor         Health check / profile / safe repair",
 		"  logs           Inspect the live agent log",
 		"  ai             Ask the Obylon support assistant",
@@ -389,7 +392,7 @@ func printAdminHelp() {
 	ui.PrintCompactHeader("OBYLON SENTINEL · ADMIN", "Explicit administrative command namespace")
 	fmt.Println("Usage: obylonc admin <command> [options]")
 	fmt.Println()
-	adminOrder := []string{"activate", "status", "diagnose", "doctor", "logs", "broker-logs", "core-logs", "ai", "support-bundle", "boot", "reset-identity", "deactivate"}
+	adminOrder := []string{"activate", "status", "diagnose", "troubleshoot", "doctor", "logs", "broker-logs", "core-logs", "ai", "support-bundle", "boot", "reset-identity", "deactivate"}
 	for _, name := range adminOrder {
 		entry := adminOperational[name]
 		fmt.Printf("  %-16s %s  [%s]\n", name, entry.brief, entry.scope)
@@ -439,5 +442,3 @@ func runInternalFingerprint(args []string) int {
 	fmt.Print(fingerprint)
 	return 0
 }
-
-

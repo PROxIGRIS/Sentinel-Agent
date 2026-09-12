@@ -1,4 +1,3 @@
-
 package paths
 
 import "path/filepath"
@@ -12,4 +11,3 @@ func BrokerLogFile() string {
 func CoreLogFile() string {
 	return filepath.Join(LogDir(), "core.log")
 }
-

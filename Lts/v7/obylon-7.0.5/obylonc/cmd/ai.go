@@ -133,23 +133,23 @@ func askOnce(ctx context.Context, session *aiSession, prompt string, dev bool) b
 
 	_, remaining, err := session.ask(ctx, prompt, onDelta)
 	if err != nil {
-	var msg string
-	if dev {
-		msg = fmt.Sprintf("Couldn't reach Obylon AI: %v", err)
-	} else {
-		msg = "Couldn't reach Obylon AI: something went wrong."
-	}
-	
-	if first {
-		sp.Fail(msg)
-	} else {
-		fmt.Println()
-		ui.Error("%s", msg)
-	}
-	if dev {
-		ui.Muted("[dev] prompt: %q", prompt)
-	}
-	return false
+		var msg string
+		if dev {
+			msg = fmt.Sprintf("Couldn't reach Obylon AI: %v", err)
+		} else {
+			msg = "Couldn't reach Obylon AI: something went wrong."
+		}
+
+		if first {
+			sp.Fail(msg)
+		} else {
+			fmt.Println()
+			ui.Error("%s", msg)
+		}
+		if dev {
+			ui.Muted("[dev] prompt: %q", prompt)
+		}
+		return false
 	}
 
 	fmt.Println()

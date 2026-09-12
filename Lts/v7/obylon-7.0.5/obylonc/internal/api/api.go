@@ -73,7 +73,7 @@ func (c *Client) PostJSON(url string, headers map[string]string, payload interfa
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	
+
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		// Proxy fallback (WinError 10013 / 10061 equivalent in Go)
@@ -82,7 +82,7 @@ func (c *Client) PostJSON(url string, headers map[string]string, payload interfa
 			Timeout:   c.HTTP.Timeout,
 			Transport: fallbackTransport,
 		}
-		
+
 		// Re-create request for retry
 		var retryBody io.Reader
 		if payload != nil {
@@ -97,7 +97,7 @@ func (c *Client) PostJSON(url string, headers map[string]string, payload interfa
 		if payload != nil {
 			reqRetry.Header.Set("Content-Type", "application/json")
 		}
-		
+
 		resp, err = fallbackClient.Do(reqRetry)
 		if err != nil {
 			return 0, nil, nil, err

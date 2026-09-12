@@ -513,12 +513,21 @@ func runGenericLogs(cmdName, logPath string, args []string) int {
 	// Just reuse runLogs logic but point it to our file
 	// A simple hack to reuse the existing runLogs function without refactoring everything:
 	newArgs := []string{"--file", path}
-	if !*follow { newArgs = append(newArgs, "--follow=false") }
-	if *lines != 50 { newArgs = append(newArgs, fmt.Sprintf("--lines=%d", *lines)) }
-	if *level != "" { newArgs = append(newArgs, fmt.Sprintf("--level=%s", *level)) }
-	if *grep != "" { newArgs = append(newArgs, fmt.Sprintf("--grep=%s", *grep)) }
-	if *noColor { newArgs = append(newArgs, "--no-color") }
+	if !*follow {
+		newArgs = append(newArgs, "--follow=false")
+	}
+	if *lines != 50 {
+		newArgs = append(newArgs, fmt.Sprintf("--lines=%d", *lines))
+	}
+	if *level != "" {
+		newArgs = append(newArgs, fmt.Sprintf("--level=%s", *level))
+	}
+	if *grep != "" {
+		newArgs = append(newArgs, fmt.Sprintf("--grep=%s", *grep))
+	}
+	if *noColor {
+		newArgs = append(newArgs, "--no-color")
+	}
 
 	return runLogs(newArgs)
 }
-
