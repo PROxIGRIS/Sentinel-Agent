@@ -693,8 +693,17 @@ begin
   
   if CurPageID = wpWelcome then
   begin
-    NeedsVC64 := not VCReady(True);
-    NeedsVC32 := not VCReady(False);
+    
+      if IsWin64 then
+      begin
+        NeedsVC64 := not VCReady(True);
+        NeedsVC32 := False;
+      end
+      else
+      begin
+        NeedsVC64 := False;
+        NeedsVC32 := not VCReady(False);
+      end;
 
     if not HostToolExists('schtasks.exe') then
     begin
