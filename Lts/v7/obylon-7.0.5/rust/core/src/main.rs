@@ -1429,25 +1429,38 @@ fn try_direct_report(event: &serde_json::Value) {
     );
     let anon_key = supabase_anon_key;
 
-    match winhttp_post_json(&url, &anon_key, &body.to_string()) {
-        Ok(status) if (200..300).contains(&status) => {
-            logger().info(
-                "fastlane",
-                "direct report delivered",
-                &[("status", &status.to_string())],
-            );
-        }
-        Ok(status) => {
-            logger().warn(
-                "fastlane",
-                "direct report rejected — will still reach the server via the events queue",
-                &[("status", &status.to_string())],
-            );
-        }
-        Err(e) => {
-            logger().warn("fastlane", "direct report failed (offline?) — will still reach the server via the events queue", &[("error", &e)]);
-        }
+    // Never let telemetry/reporting block the fast-lane enforcement path.
+    // Wi-Fi/DNS/proxy recovery can take minutes on a cold Windows boot. The
+    // durable local events file is the source of truth; this direct POST is
+    // only an opportunistic latency optimization.
+    static DIRECT_REPORT_INFLIGHT: AtomicBool = AtomicBool::new(false);
+    if DIRECT_REPORT_INFLIGHT.swap(true, Ordering::AcqRel) {
+        logger().info("fastlane", "direct report already in flight; durable queue remains authoritative", &[]);
+        return;
     }
+
+    std::thread::spawn(move || {
+        match winhttp_post_json(&url, &anon_key, &body.to_string()) {
+            Ok(status) if (200..300).contains(&status) => {
+                logger().info(
+                    "fastlane",
+                    "direct report delivered",
+                    &[("status", &status.to_string())],
+                );
+            }
+            Ok(status) => {
+                logger().warn(
+                    "fastlane",
+                    "direct report rejected — durable events queue remains authoritative",
+                    &[("status", &status.to_string())],
+                );
+            }
+            Err(e) => {
+                logger().warn("fastlane", "direct report failed (offline?) — durable events queue remains authoritative", &[("error", &e)]);
+            }
+        }
+        DIRECT_REPORT_INFLIGHT.store(false, Ordering::Release);
+    });
 }
 
 /// Minimal synchronous WinHTTP POST. HIGHEST-RISK BLOCK ALONGSIDE MEDIA

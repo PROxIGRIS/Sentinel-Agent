@@ -366,7 +366,7 @@ class SessionManager:
                 # School Supabase endpoints have standard Let's Encrypt certificates.
                 client = create_client(
                     SUPABASE_URL, SUPABASE_KEY,
-                    options=ClientOptions(httpx_client=httpx.Client(verify=certifi.where(), timeout=30.0, trust_env=use_proxy), auto_refresh_token=True, persist_session=False)
+                    options=ClientOptions(httpx_client=httpx.Client(verify=certifi.where(), timeout=httpx.Timeout(connect=5.0, read=15.0, write=15.0, pool=5.0), trust_env=use_proxy), auto_refresh_token=True, persist_session=False)
                 )
                 
                 if self._access_token and self._refresh_token:
@@ -443,7 +443,7 @@ class SessionManager:
                     client = create_client(
                         SUPABASE_URL, SUPABASE_KEY,
                         options=ClientOptions(
-                            httpx_client=httpx.Client(verify=certifi.where(), timeout=30.0, trust_env=use_proxy),
+                            httpx_client=httpx.Client(verify=certifi.where(), timeout=httpx.Timeout(connect=5.0, read=15.0, write=15.0, pool=5.0), trust_env=use_proxy),
                             auto_refresh_token=True,
                             persist_session=False,
                         ),
@@ -514,6 +514,36 @@ class SessionManager:
 
 session_manager = SessionManager()
 
+def _recover_session_after_network_restore(online, reason, generation, previous_generation):
+    if not online:
+        return
+    def _worker():
+        try:
+            # A network restoration can leave an existing httpx/Supabase client
+            # with dead pooled sockets. Rebuild the session instead of assuming
+            # that "client != None" means "client is healthy".
+            access = session_manager.get_tokens()[0]
+            if not access and not vault.get("ACCESS_TOKEN"):
+                return
+            logger.info(
+                "Network restoration detected; forcing session recovery",
+                component="network",
+                generation=generation,
+                reason=reason,
+            )
+            with session_manager._lock:
+                session_manager._client = None
+            ok = bool(session_manager.force_refresh())
+            if ok:
+                logger.info("Session recovery completed after network restoration", component="network", generation=generation)
+            else:
+                logger.warning("Session recovery did not complete; background retry will continue", component="network", generation=generation)
+        except Exception as e:
+            logger.warning("Session recovery worker failed after network restoration", component="network", error=str(e))
+    threading.Thread(target=_worker, daemon=True, name="network_session_recover").start()
+
+NETWORK_RESILIENCE.add_callback(_recover_session_after_network_restore)
+
 
 import subprocess
 import threading
@@ -576,23 +606,216 @@ ClientOptions = None
 httpx = None
 win32crypt = None
 tk = None
+class NetworkResilience:
+    """Aggressive offline-first connectivity monitor.
+
+    "ONLINE" means the machine has a usable network path, not that one specific
+    SaaS hostname happens to answer. This distinction matters on laptops that
+    take minutes to recover Wi-Fi, DNS, captive portals, or a flaky control plane.
+    The monitor combines local-route, DNS, and TCP signals, retries with jitter,
+    and supports an explicit probe kick from recovery workers.
+    """
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._online = False
+        self._control_plane_ok = False
+        self._last_probe = 0.0
+        self._last_error = ""
+        self._last_reason = "probe pending"
+        self._consecutive_failures = 0
+        self._generation = 0
+        self._stop = threading.Event()
+        self._force_probe = threading.Event()
+        self._started = False
+        self._online_event = threading.Event()
+        self._callbacks = []
+
+    def start(self):
+        with self._lock:
+            if self._started:
+                return
+            self._started = True
+        threading.Thread(target=self._loop, daemon=True, name="network_watch").start()
+
+    def add_callback(self, callback):
+        with self._lock:
+            self._callbacks.append(callback)
+
+    def force_probe(self):
+        self._force_probe.set()
+        self.start()
+
+    def is_online(self) -> bool:
+        return self._online_event.is_set()
+
+    def control_plane_ok(self) -> bool:
+        with self._lock:
+            return self._control_plane_ok
+
+    def generation(self) -> int:
+        with self._lock:
+            return self._generation
+
+    def wait_online(self, timeout: float | None = None) -> bool:
+        return self._online_event.wait(timeout)
+
+    def last_error(self) -> str:
+        with self._lock:
+            return self._last_error
+
+    def last_reason(self) -> str:
+        with self._lock:
+            return self._last_reason
+
+    def _set_state(self, online: bool, reason: str, control_plane_ok: bool | None = None):
+        with self._lock:
+            changed = online != self._online
+            previous_generation = self._generation
+            self._online = online
+            if control_plane_ok is not None:
+                self._control_plane_ok = control_plane_ok
+            self._last_probe = time.monotonic()
+            self._last_reason = reason
+            self._last_error = "" if online else reason
+            if changed:
+                self._generation += 1
+            callbacks = list(self._callbacks) if changed else []
+        if online:
+            self._online_event.set()
+            sys_state.update_network(NetworkState.ONLINE, reason, "network_watch", next_act="resume network workers")
+            if changed:
+                logger.info(
+                    "Connectivity restored; network-dependent workers may resume",
+                    component="network",
+                    reason=reason,
+                    generation=self._generation,
+                    control_plane_ok=self._control_plane_ok,
+                )
+        else:
+            self._online_event.clear()
+            sys_state.update_network(NetworkState.OFFLINE, reason, "network_watch", next_act="retry automatically")
+            if changed:
+                logger.warning(
+                    "Connectivity unavailable; entering offline-first mode",
+                    component="network",
+                    reason=reason,
+                    generation=self._generation,
+                )
+        for cb in callbacks:
+            try:
+                cb(online, reason, self._generation, previous_generation)
+            except Exception as e:
+                logger.debug("Network state callback failed", component="network", error=str(e))
+
+    def _local_route_probe(self) -> tuple[bool, str]:
+        """Detect a usable adapter/default route without doing a blocking HTTP call."""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                sock.settimeout(1.0)
+                # UDP connect does not send a packet; it asks Windows for the
+                # route/interface it would use for the destination.
+                sock.connect(("1.1.1.1", 53))
+                local = sock.getsockname()[0]
+                return bool(local and not local.startswith("0.")), f"local route via {local}"
+            finally:
+                sock.close()
+        except Exception as e:
+            return False, str(e)
+
+    def _control_probe(self) -> tuple[bool, str]:
+        url = SUPABASE_URL or vault.get("SUPABASE_URL")
+        if not url:
+            return False, "control-plane URL not configured"
+        host = url.replace("https://", "").replace("http://", "").split("/", 1)[0]
+        try:
+            infos = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+            for family, socktype, proto, _canonname, sockaddr in infos[:8]:
+                sock = socket.socket(family, socktype, proto)
+                try:
+                    sock.settimeout(1.5)
+                    sock.connect(sockaddr)
+                    return True, f"control-plane {host}:443 reachable"
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+            return False, f"control-plane {host}:443 unreachable"
+        except Exception as e:
+            return False, f"control-plane DNS/probe failed: {e}"
+
+    def _probe(self) -> bool:
+        route_ok, route_reason = self._local_route_probe()
+        if not route_ok:
+            self._set_state(False, f"No usable network route: {route_reason}", control_plane_ok=False)
+            return False
+
+        cp_ok, cp_reason = self._control_probe()
+        # The machine is ONLINE when its network path exists, even if the
+        # control plane is temporarily unavailable. This prevents a healthy
+        # Wi-Fi restoration from being mislabeled offline forever because DNS,
+        # proxy, or the SaaS endpoint recovered a few seconds later.
+        if cp_ok:
+            self._set_state(True, f"{route_reason}; {cp_reason}", control_plane_ok=True)
+        else:
+            self._set_state(True, f"{route_reason}; {cp_reason}; local network is usable", control_plane_ok=False)
+        return True
+
+    def _loop(self):
+        delay = 0.75
+        while not self._stop.is_set():
+            self._force_probe.clear()
+            online = self._probe()
+            if online:
+                # Fast recovery after adapter/driver transitions; slower while
+                # healthy so a good connection is not hammered with probes.
+                delay = 0.75
+                self._force_probe.wait(20.0)
+            else:
+                self._force_probe.wait(delay)
+                # Cap at 15s. A three-minute Wi-Fi recovery should be noticed
+                # within seconds after Windows brings the adapter back.
+                delay = min(delay * 1.6, 15.0)
+
+
+NETWORK_RESILIENCE = NetworkResilience()
+
 def _robust_urlopen(req, timeout, component_name="network"):
     import ssl, certifi, urllib.request, urllib.error
     ctx = ssl.create_default_context(cafile=certifi.where())
+    timeout = max(1.0, float(timeout))
     try:
         opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
         return opener.open(req, timeout=timeout)
     except Exception as e:
+        # HTTP status errors prove that the network path worked. Only transport
+        # failures should flip the shared gate to OFFLINE.
+        transport_failure = isinstance(e, (urllib.error.URLError, TimeoutError, socket.timeout, ConnectionError, OSError)) and not isinstance(e, urllib.error.HTTPError)
+        if transport_failure:
+            NETWORK_RESILIENCE.force_probe()
+            if not NETWORK_RESILIENCE.is_online():
+                NETWORK_RESILIENCE._set_state(False, f"{component_name}: {e}", control_plane_ok=False)
         if "10013" in str(e) or "10061" in str(e) or "proxy" in str(e).lower():
             try:
                 logger.warning(f"{component_name.capitalize()} proxy error ({e}). Retrying with proxies disabled.", component=component_name)
             except NameError:
                 pass
             fallback_opener = urllib.request.build_opener(
-                urllib.request.ProxyHandler({}), 
+                urllib.request.ProxyHandler({}),
                 urllib.request.HTTPSHandler(context=ctx)
             )
-            return fallback_opener.open(req, timeout=timeout)
+            try:
+                return fallback_opener.open(req, timeout=min(timeout, 8.0))
+            except Exception as fallback_error:
+                transport_failure = isinstance(fallback_error, (urllib.error.URLError, TimeoutError, socket.timeout, ConnectionError, OSError)) and not isinstance(fallback_error, urllib.error.HTTPError)
+                if transport_failure:
+                    NETWORK_RESILIENCE.force_probe()
+                    if not NETWORK_RESILIENCE.is_online():
+                        NETWORK_RESILIENCE._set_state(False, f"{component_name} direct retry: {fallback_error}", control_plane_ok=False)
+                raise
         raise
 
 def _ensure_session_deps():
@@ -5514,24 +5737,19 @@ def log_ambient(workstation_id: str, title: str | None, proc: str | None,
 # PHASE 6 — THE SYNC DAEMON (The Surge)
 # =====================================================
 def network_reachable() -> bool:
-    """Lightweight reachability probe. Cheap & non-mutating."""
+    """Cheap, non-blocking read of the shared connectivity state.
+
+    Never opens a socket itself. This is deliberately safe to call from hot
+    loops and recovery logic even while Wi-Fi/DNS is completely dead.
+    """
+    if NETWORK_RESILIENCE.is_online():
+        return True
+    NETWORK_RESILIENCE.force_probe()
     try:
-        url = SUPABASE_URL
-        if not url:
-            try: vault.load()
-            except Exception: pass
-            url = vault.get("SUPABASE_URL")
-        if not url:
-            sys_state.update_network(NetworkState.OFFLINE, "No URL configured", "probe")
-            return False
-        
-        host = url.replace("https://", "").replace("http://", "").split("/")[0]
-        with socket.create_connection((host, 443), timeout=4):
-            sys_state.update_network(NetworkState.ONLINE, "TCP 443 open", "probe")
-            return True
-    except Exception as e:
-        sys_state.update_network(NetworkState.OFFLINE, str(e), "probe")
-        return False
+        sys_state.update_network(NetworkState.OFFLINE, NETWORK_RESILIENCE.last_error() or "probe pending", "probe", next_act="retry automatically")
+    except Exception:
+        pass
+    return False
 
 
 def _surge_one(row) -> bool:
@@ -5689,6 +5907,18 @@ def sync_daemon() -> None:
             # of pending rows so a cold authenticated client gets a chance to
             # heal on every tick the network is actually up.
             if session_manager.get_client() is None and network_reachable():
+                logger.info("Network is back; rebuilding authenticated session before surge", component="sync", network_generation=NETWORK_RESILIENCE.generation())
+                try:
+                    sys_state.update_auth(AuthState.REFRESHING, "Network restored; rebuilding session", "sync_daemon", next_act="initialize client")
+                    session_ok = bool(session_manager.initialize_from_vault())
+                    if not session_ok and vault.get("ACCESS_TOKEN"):
+                        session_manager.force_refresh()
+                        session_ok = session_manager.get_client() is not None
+                    if session_ok:
+                        sys_state.update_auth(AuthState.AUTHENTICATED, "Session recovered after network restoration", "sync_daemon", next_act="resume queue")
+                        logger.info("Authenticated session recovered after network restoration", component="sync")
+                except Exception as e:
+                    logger.warning("Session recovery attempt failed; will retry", component="sync", error=str(e))
                 observation = recovery_engine.classify(
                     signal="client_missing",
                     component="sync_daemon",
@@ -6183,12 +6413,20 @@ def remote_config_loop(workstation_id: str) -> None:
     _name_current_thread("remote_config")
     CORE_READY.wait(timeout=30)
     manager = RemoteConfigManager(workstation_id)
+    backoff = 5.0
     while True:
         workstation_id = resolve_offline_wid(workstation_id)
         manager.agent_id = workstation_id
-        if not workstation_id.startswith("offline-"):
-            manager.fetch()
-        time.sleep(10)
+        if not workstation_id.startswith("offline-") and NETWORK_RESILIENCE.is_online():
+            try:
+                manager.fetch()
+                backoff = 5.0
+            except Exception as e:
+                logger.warning("Remote config refresh failed; continuing with cached configuration", component="remote_config", error=str(e))
+                backoff = min(backoff * 1.7, 30.0)
+        else:
+            backoff = min(backoff * 1.15, 15.0)
+        time.sleep(backoff)
 
 # =====================================================
 # PHASE 7: V7 STRUCTURAL INTELLIGENCE (FSM & WARDEN)
@@ -8047,6 +8285,11 @@ def _session_bootstrap_loop() -> None:
     while not _BOOT_SESSION_STOP.is_set():
         if session_manager.get_client() is not None:
             return
+        if not NETWORK_RESILIENCE.wait_online(timeout=0.25):
+            sys_state.update_auth(AuthState.UNINITIALIZED, "Waiting for network; using local cached state", "session_mgr")
+            _BOOT_SESSION_STOP.wait(delay)
+            delay = min(delay * 1.7, 10.0)
+            continue
         if sys_state.auth == AuthState.AUTH_TERMINAL:
             time.sleep(15)
             observation = recovery_engine.classify(
@@ -8120,9 +8363,10 @@ def _boot_license_watch() -> None:
 
 # ---------- Main ----------
 class BuildInfo:
-    VERSION = "7.0.6-LTS"
-    BUILD_NUMBER = "7.0.6-202609061200"
-    BUILD_DATE = "2026-09-06"
+    VERSION = "7.0.7-LTS"
+    BUILD_CODE = "OBY-MC-NR-20260913-1200-01"
+    BUILD_NUMBER = BUILD_CODE  # compatibility alias for existing telemetry
+    BUILD_DATE = "2026-09-13"
     COMMIT = "session-broker+provenance+multilingual+recovery-intelligence+vault-integrity+ad-network-reputation+adaptive-scan-pressure+node-reconciliation+action-dispatch-hardening"
 
     @staticmethod
@@ -8187,15 +8431,21 @@ class BuildInfo:
 
         try:
             logger.info(f"=== OBYLON SENTINEL v{BuildInfo.VERSION} (LTS) ===", component="boot")
-            logger.info("Build Details", build_number=BuildInfo.BUILD_NUMBER, build_date=BuildInfo.BUILD_DATE, commit=BuildInfo.COMMIT, component="boot")
+            logger.info("Build Details", build_code=BuildInfo.BUILD_CODE, build_date=BuildInfo.BUILD_DATE, commit=BuildInfo.COMMIT, component="boot")
             logger.info("Deployment target: School-managed Windows workstations", component="boot")
             logger.info("All evidence only on confirmed policy violation. Authorized IT use only.", component="boot")
         except Exception:
             pass
 
 def license_heartbeat_loop(workstation_id: str):
+    retry_delay = 15.0
     while True:
         try:
+            if not NETWORK_RESILIENCE.wait_online(timeout=0.5):
+                sys_state.update_license(LicenseState.TEMPORARILY_UNAVAILABLE, "Waiting for network", "heartbeat")
+                time.sleep(min(retry_delay, 30.0))
+                retry_delay = min(retry_delay * 1.5, 120.0)
+                continue
             sys_state.update_license(LicenseState.CHECKING, "Starting heartbeat check", "heartbeat")
             # Actively refresh token to prevent stale 401s (Round 3 fix, now via SessionManager)
             session_manager.force_refresh()
@@ -8309,6 +8559,7 @@ def license_heartbeat_loop(workstation_id: str):
                             return
 
                 sys_state.update_license(LicenseState.VALID, "Heartbeat OK", "heartbeat")
+                retry_delay = 15.0
 
         except Exception as e:
             # BUGFIX (2026-09): a 404 from /license_heartbeat means the
@@ -8360,7 +8611,7 @@ def license_heartbeat_loop(workstation_id: str):
                 except Exception:
                     pass
         
-        time.sleep(300) # Every 5 minutes
+        time.sleep(300) # Healthy path: every 5 minutes
 
 def _launched_by_broker() -> bool:
     """A0: Verify our parent process is actually ObylonCore.exe. Checks real
@@ -8931,6 +9182,10 @@ if __name__ == "__main__":
 
         SUPABASE_URL = vault.get("SUPABASE_URL")
         SUPABASE_KEY = vault.get("SUPABASE_ANON_KEY")
+
+        # Network readiness is a background concern. Start the gate before any
+        # network-dependent worker so dead Wi-Fi never serializes startup.
+        NETWORK_RESILIENCE.start()
 
         # Ignite the Supabase session manager asynchronously. A transient
         # socket/TLS failure is retried in the background instead of holding

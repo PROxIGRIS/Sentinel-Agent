@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -249,7 +250,12 @@ func runStatus(args []string) int {
 		return 1
 	}
 	if !ok || v.Get("ACCESS_TOKEN") == "" {
-		ui.Warn("This workstation has not been activated. Run: obylonc activate <LICENSE_KEY>")
+		if JSONMode() {
+			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"tool": "obylonc status", "version": Version, "activated": false, "agent": "unknown"})
+			return 0
+		}
+		ui.PrintCompactHeader("OBYLON STATUS", "Endpoint state at a glance")
+		ui.PrintBox("WORKSTATION", []string{ui.StatusWarn("Not activated"), "No local license token is available.", "Run: obylonc activate <LICENSE_KEY>"}, ui.Yellow)
 		return 0
 	}
 
@@ -257,51 +263,98 @@ func runStatus(args []string) int {
 	expiresStr := v.Get("EXPIRES_AT")
 	lastHB := v.Get("LAST_HEARTBEAT_OK_AT")
 	grace := v.Get("GRACE_DAYS")
+	licenseHealthy := strings.EqualFold(status, "active")
 
-	statusColor := ui.Red
-	if strings.EqualFold(status, "active") {
-		statusColor = ui.Green
+	processState := map[string]bool{
+		"broker": processExists("ObylonBroker.exe"),
+		"core":   processExists("ObylonCore.exe"),
+		"brain":  processExists("obylon.exe"),
 	}
-	var lines []string
-	lines = append(lines, fmt.Sprintf("%-16s%s", "Status:", statusColor(strings.ToUpper(status))))
+	agentState := "stopped"
+	if processState["broker"] || processState["core"] || processState["brain"] {
+		agentState = "running"
+	}
+	if processState["broker"] && !processState["core"] {
+		agentState = "degraded"
+	}
 
+	if JSONMode() {
+		expires := ""
+		if expiresStr != "" {
+			expires = expiresStr
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"tool": "obylonc status", "version": Version, "activated": true,
+			"license":   map[string]any{"status": status, "expires_at": expires, "grace_days": grace, "node_id": v.Get("NODE_ID"), "node_name": v.Get("NODE_NAME")},
+			"agent":     map[string]any{"state": agentState, "broker": processState["broker"], "core": processState["core"], "brain": processState["brain"]},
+			"heartbeat": lastHB,
+		})
+		if !licenseHealthy || agentState == "degraded" {
+			return 1
+		}
+		return 0
+	}
+
+	ui.PrintCompactHeader("OBYLON STATUS", "One-screen endpoint health")
+	licenseValue := ui.Green("ACTIVE")
+	if !licenseHealthy {
+		licenseValue = ui.Red(strings.ToUpper(defaultString(status, "UNKNOWN")))
+	}
+	agentValue := ui.Green("RUNNING")
+	if agentState == "degraded" {
+		agentValue = ui.Yellow("DEGRADED")
+	} else if agentState == "stopped" {
+		agentValue = ui.Red("STOPPED")
+	}
+
+	ui.PrintBox("HEALTH", []string{
+		fmt.Sprintf("License       %s", licenseValue),
+		fmt.Sprintf("Agent         %s", agentValue),
+		fmt.Sprintf("Broker        %s", boolStatus(processState["broker"])),
+		fmt.Sprintf("Core          %s", boolStatus(processState["core"])),
+		fmt.Sprintf("Brain         %s", boolStatus(processState["brain"])),
+	}, ui.Blue)
+
+	lines := []string{
+		fmt.Sprintf("Node          %s", ui.Bold(defaultString(v.Get("NODE_NAME"), "unknown"))),
+		fmt.Sprintf("Node ID       %s", ui.Dim(defaultString(v.Get("NODE_ID"), "unknown"))),
+		fmt.Sprintf("Version       %s", Version),
+	}
 	if expiresStr != "" {
 		if expDT, perr := parseISO(expiresStr); perr == nil {
 			days := int(time.Until(expDT) / (24 * time.Hour))
 			if days >= 0 {
-				lines = append(lines, fmt.Sprintf("%-16s%s (%d days remaining)", "Expiration:", safeSlice(expiresStr, 10), days))
+				lines = append(lines, fmt.Sprintf("Expires       %s (%d days)", safeSlice(expiresStr, 10), days))
 			} else {
-				lines = append(lines, fmt.Sprintf("%-16s%s", "Expiration:", ui.Red(fmt.Sprintf("Expired %d days ago", -days))))
+				lines = append(lines, fmt.Sprintf("Expires       %s", ui.Red(fmt.Sprintf("expired %d days ago", -days))))
 			}
 		}
 	}
 	if lastHB != "" {
-		lines = append(lines, fmt.Sprintf("%-16s%s UTC", "Last Heartbeat:", formatHeartbeat(lastHB)))
+		lines = append(lines, fmt.Sprintf("Heartbeat     %s UTC", formatHeartbeat(lastHB)))
 	}
 	if grace != "" {
-		lines = append(lines, fmt.Sprintf("%-16s%s days", "Offline Grace:", grace))
+		lines = append(lines, fmt.Sprintf("Offline grace %s days", grace))
 	}
-	lines = append(lines, "")
-	lines = append(lines, fmt.Sprintf("%-16s%s", "Node Name:", ui.Bold(defaultString(v.Get("NODE_NAME"), "unknown"))))
-	lines = append(lines, fmt.Sprintf("%-16s%s", "Node ID:", ui.Dim(defaultString(v.Get("NODE_ID"), "unknown"))))
-	lines = append(lines, fmt.Sprintf("%-16sv%s", "Agent Version:", Version))
-	if authToken := v.Get("AUTHZ_ACCESS_TOKEN"); authToken != "" {
-		authState := "active"
-		if expiry, err := parseISO(v.Get("AUTHZ_EXPIRES_AT")); err == nil && time.Now().After(expiry) {
-			authState = "expired"
-		}
-		lines = append(lines, fmt.Sprintf("%-16s%s", "Umbraxis Auth:", strings.ToUpper(authState)))
-		lines = append(lines, fmt.Sprintf("%-16s%s", "Auth Scopes:", ui.Dim(defaultString(v.Get("AUTHZ_SCOPES"), "none"))))
-		lines = append(lines, fmt.Sprintf("%-16s%s", "Auth Expires:", defaultString(v.Get("AUTHZ_EXPIRES_AT"), "unknown")))
-	}
+	ui.PrintBox("DETAILS", lines, ui.Cyan)
 
-	ui.PrintBox("OBYLON SENTINEL · WORKSTATION STATUS", lines, ui.Blue)
-	if strings.EqualFold(status, "active") {
-		ui.Hint("Workstation is provisioned and reporting license state normally.")
-	} else {
-		ui.Hint("Check `obylonc diagnose` for connectivity and authentication details.")
+	if agentState == "degraded" || agentState == "stopped" {
+		ui.Hint("Run `obylonc doctor --deep` for evidence and a root-cause explanation.")
+		return 1
+	} else if licenseHealthy {
+		ui.Hint("Endpoint is provisioned and the boot chain is currently running.")
+	}
+	if !licenseHealthy {
+		return 1
 	}
 	return 0
+}
+
+func boolStatus(ok bool) string {
+	if ok {
+		return ui.Green("● running")
+	}
+	return ui.Dim("○ not running")
 }
 
 // ---------------------------------------------------------------------

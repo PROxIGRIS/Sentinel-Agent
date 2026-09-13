@@ -111,6 +111,60 @@ begin
   end;
 end;
 
+function VCFilesPresent(Is64Bit: Boolean): Boolean;
+begin
+  if Is64Bit then
+    Result := FileExists(ExpandConstant('{sys}\VCRUNTIME140.dll')) and
+              FileExists(ExpandConstant('{sys}\VCRUNTIME140_1.dll')) and
+              FileExists(ExpandConstant('{sys}\MSVCP140.dll'))
+  else
+    Result := FileExists(ExpandConstant('{syswow64}\VCRUNTIME140.dll')) and
+              FileExists(ExpandConstant('{syswow64}\VCRUNTIME140_1.dll')) and
+              FileExists(ExpandConstant('{syswow64}\MSVCP140.dll'));
+end;
+
+function VCReady(Is64Bit: Boolean): Boolean;
+begin
+  // Registry presence alone is not enough. A broken/partial redistributable
+  // can leave the registry entry behind while the loader DLL is absent.
+  Result := VCInstalled(Is64Bit) and VCFilesPresent(Is64Bit);
+end;
+
+function HostToolExists(const ToolName: string): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec(ExpandConstant('{sys}\where.exe'), ToolName, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+function ValidateInstalledPayload: Boolean;
+var
+  Missing: string;
+begin
+  Missing := '';
+  if not FileExists(ExpandConstant('{app}\ObylonBroker.exe')) then
+    Missing := Missing + 'ObylonBroker.exe' + #13#10;
+  if not FileExists(ExpandConstant('{app}\ObylonCore.exe')) then
+    Missing := Missing + 'ObylonCore.exe' + #13#10;
+  if not FileExists(ExpandConstant('{app}\obylon.exe')) then
+    Missing := Missing + 'obylon.exe' + #13#10;
+  if not FileExists(ExpandConstant('{app}\tesseract_engine\tesseract.exe')) then
+    Missing := Missing + 'tesseract_engine\tesseract.exe' + #13#10;
+  if not DirExists(ExpandConstant('{commonappdata}\Obylon\logs')) then
+    Missing := Missing + '{commonappdata}\Obylon\logs' + #13#10;
+
+  if Missing <> '' then
+  begin
+    MsgBox('Installation preflight failed. The installed payload is incomplete.'#13#10#13#10 +
+           'Missing:'#13#10 + Missing + #13#10 +
+           'Setup will stop before activation or boot-task registration.', mbCriticalError, MB_OK);
+    Result := False;
+    Exit;
+  end;
+
+  Result := True;
+end;
+
 function RunHiddenCommand(const Filename, Parameters: string; var ResultCode: Integer): Boolean;
 begin
   Result := Exec(ExpandConstant('{sys}\cmd.exe'), '/c "' + Filename + ' ' + Parameters + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
@@ -618,6 +672,11 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep <> ssPostInstall then Exit;
+  // Never register the scheduled task or activate the endpoint until the full
+  // installed payload has been verified. This prevents a half-installed agent
+  // from silently becoming a broken boot task.
+  if not ValidateInstalledPayload then
+    RaiseException('Obylon dependency/payload preflight failed. Setup cannot continue safely.');
   if not WarmupPythonRuntime then
     RaiseException('Obylon runtime preparation failed. Setup cannot continue safely.');
   if not ActivateFromInstaller then
@@ -634,8 +693,22 @@ begin
   
   if CurPageID = wpWelcome then
   begin
-    NeedsVC64 := not VCInstalled(True);
-    NeedsVC32 := not VCInstalled(False);
+    NeedsVC64 := not VCReady(True);
+    NeedsVC32 := not VCReady(False);
+
+    if not HostToolExists('schtasks.exe') then
+    begin
+      MsgBox('Windows Task Scheduler tooling (schtasks.exe) is missing. Obylon cannot register its protected boot service on this Windows installation.', mbCriticalError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+
+    if not HostToolExists('powershell.exe') then
+    begin
+      MsgBox('Windows PowerShell is missing. Obylon requires it for hardened Task Scheduler recovery settings.', mbCriticalError, MB_OK);
+      Result := False;
+      Exit;
+    end;
     
     if NeedsVC64 or NeedsVC32 then
     begin
@@ -687,7 +760,7 @@ begin
         end;
       end;
       
-      if (NeedsVC64 and not VCInstalled(True)) or (NeedsVC32 and not VCInstalled(False)) then
+      if (NeedsVC64 and not VCReady(True)) or (NeedsVC32 and not VCReady(False)) then
       begin
         MsgBox('The dependency installation did not complete successfully. Setup will abort.', mbError, MB_OK);
         Result := False;

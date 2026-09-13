@@ -7,7 +7,7 @@ single static binary with `go build`.
 
 ## What moved, and what didn't
 
-**Moved here:** `activate`, `status`, `diagnose`, `deactivate`,
+**Moved here:** `activate`, `status`, `diagnose`, `doctor`, `deactivate`,
 `support-bundle`, `boot`, `reset-identity`, `ai`. Every one of these reads
 or writes the *same* on-disk files the Python agent uses (the DPAPI-encrypted
 vault at `%PROGRAMDATA%\Obylon\obylon.enc`, the machine identity file, the
@@ -58,6 +58,7 @@ production vault.
 | `activate <KEY>` / `--key-file <path>` | Activate this workstation |
 | `status` | Human-readable license status |
 | `diagnose [--dev]` | Network + auth + signature checks |
+| `doctor [--deep|--deepfix|--fix|--profile]` | Unified health, evidence, profiling, repair, and post-fix verification |
 | `logs [-f] [-n N] [--level L] [--grep S]` | Tail/follow the live log |
 | `ai ["prompt"] [-i]` | Streaming AI support assistant |
 | `boot {status,enable,disable}` | Manage the boot-time scheduled task (Admin) |
@@ -66,8 +67,7 @@ production vault.
 | `deactivate [-y]` | Wipe the local vault |
 | `version` / `-v` | Print version info |
 
-Every command accepts `--dev` (verbose errors, raw payloads) and
-`--verbose`/`--debug`.
+Global output controls are consistent across the CLI: `--json`, `--quiet`, and `--no-color` where supported, plus `--verbose`/`--debug`. Doctor is the canonical diagnostic engine.
 
 ## Project layout
 
@@ -147,3 +147,35 @@ to wire up:
 The CLI command registry now assigns every operational command an explicit scope and action metadata. Use `obylonc admin <command>` for the explicit administrative namespace; `obylonc auth` additionally accepts safe admin shortcuts such as `deactivate`, `reset-identity`, `boot-enable`, and `support-bundle`. These paths do not bypass server authorization.
 
 License activation is performed by the installer before setup completes. The installer stages the key in a temporary file and invokes `obylonc activate --key-file ... --node-name ...`; the same command remains available for re-provisioning and recovery.
+
+
+## CLI masterclass workflow
+
+The public troubleshooting surface is intentionally consolidated under `doctor`; there is no separate troubleshoot command.
+
+```text
+obylonc status                    # one-screen endpoint state
+obylonc doctor                    # fast local health check
+obylonc doctor --deep             # forensic dependency/boot/evidence scan
+obylonc doctor --fix              # safe repairs from the fast scan
+obylonc doctor --deepfix           # forensic scan + safe repair + verification
+obylonc doctor --deep --json      # automation-friendly structured evidence
+obylonc logs --file <path>        # inspect any component log through one log command
+obylonc support-bundle             # sanitized support artifact with available evidence
+```
+
+Doctor reports stable finding IDs, severity, evidence, impact, and remediation. Native-loader failures are decoded from Windows exit status and correlated with Task Scheduler and Application event evidence so failures that occur before Obylon logging starts can still be diagnosed.
+
+`--json` is intended for automation and integrations. Repair commands require `--yes` in quiet/JSON mode so they can never block waiting for a terminal confirmation.
+
+## Log Story / Forensics
+
+`obylonc logs --deep` is the human-readable interpretation layer for the raw Broker/Core/Brain logs. It merges the streams by timestamp, translates technical messages into plain-language events, and emits stable `OBY-*` diagnostic codes. Raw logs are never rewritten by this feature.
+
+Example:
+
+```text
+obylonc logs --deep
+```
+
+The story can show: Broker started → Broker launched Core → Core started → Core reported Brain security-ready → Brain exited with code `0xC0000135` → `OBY-WIN-DLL-MISSING`.

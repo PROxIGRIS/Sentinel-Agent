@@ -18,6 +18,13 @@ import (
 // --no-color in commands that accept it.
 var ColorEnabled = os.Getenv("NO_COLOR") == ""
 
+// Quiet suppresses human-oriented UI chrome. Commands that expose structured
+// output can use it to keep stdout machine-readable.
+var Quiet bool
+
+// SetQuiet toggles human-oriented output suppression.
+func SetQuiet(v bool) { Quiet = v }
+
 // DisableColor turns off all styling for the remainder of the process.
 func DisableColor() { ColorEnabled = false }
 
@@ -53,10 +60,16 @@ func Divider(width int) string {
 }
 
 func Section(title string) {
+	if Quiet {
+		return
+	}
 	fmt.Printf("\n%s %s\n", Cyan("◆"), Bold(title))
 }
 
 func Hint(format string, a ...any) {
+	if Quiet {
+		return
+	}
 	fmt.Println(Dim("  " + fmt.Sprintf(format, a...)))
 }
 
@@ -74,35 +87,83 @@ const (
 )
 
 func Success(format string, a ...any) {
+	if Quiet {
+		return
+	}
 	fmt.Printf("%s %s\n", Green(IconOK), fmt.Sprintf(format, a...))
 }
 
 func Error(format string, a ...any) {
+	if Quiet {
+		return
+	}
 	fmt.Fprintf(os.Stderr, "%s %s\n", Red(IconErr), fmt.Sprintf(format, a...))
 }
 
 func Warn(format string, a ...any) {
+	if Quiet {
+		return
+	}
 	fmt.Printf("%s %s\n", Yellow(IconWarn), fmt.Sprintf(format, a...))
 }
 
 func Info(format string, a ...any) {
+	if Quiet {
+		return
+	}
 	fmt.Printf("%s %s\n", Cyan(IconInfo), fmt.Sprintf(format, a...))
 }
 
 // Step prints a section header, e.g. "▶ NETWORK & REACHABILITY".
 func Step(format string, a ...any) {
+	if Quiet {
+		return
+	}
 	fmt.Printf("\n%s %s\n", Cyan(IconArrow), Bold(Cyan(fmt.Sprintf(format, a...))))
 }
 
 // Muted prints a low-emphasis line, for secondary/meta detail.
 func Muted(format string, a ...any) {
+	if Quiet {
+		return
+	}
 	fmt.Println(Dim(fmt.Sprintf(format, a...)))
 }
 
 // KV prints a "Label: value" line with a dim label and bright value —
 // used by `status` and `support-bundle` for field/value listings.
 func KV(label, value string) {
+	if Quiet {
+		return
+	}
 	fmt.Printf("%s %s\n", Dim(label+":"), value)
+}
+
+// StatusLine renders a compact status row with a fixed label width.
+func StatusLine(icon, label, value string, color func(string) string) {
+	if Quiet {
+		return
+	}
+	if color == nil {
+		color = White
+	}
+	fmt.Printf("%s %-18s %s\n", color(icon), label, value)
+}
+
+// Table prints aligned key/value rows without box-heavy output.
+func Table(rows [][2]string) {
+	if Quiet {
+		return
+	}
+	width := 0
+	for _, r := range rows {
+		if len(r[0]) > width {
+			width = len(r[0])
+		}
+	}
+	for _, r := range rows {
+		fmt.Printf("  %-*s  %s\n", width, Dim(r[0]), r[1])
+	}
 }
 
 // ansiRE strips ANSI SGR escape sequences, used to measure visible width of
@@ -156,6 +217,9 @@ func Box(title string, lines []string, borderColor func(string) string) string {
 
 // PrintBox is Box() written straight to stdout.
 func PrintBox(title string, lines []string, borderColor func(string) string) {
+	if Quiet {
+		return
+	}
 	fmt.Println(Box(title, lines, borderColor))
 }
 
@@ -170,6 +234,9 @@ const logo = `     ██████╗ ██████╗ ██╗   █�
 
 // PrintBanner prints the OBYLON wordmark with a byline underneath.
 func PrintBanner(byline string) {
+	if Quiet {
+		return
+	}
 	fmt.Println(Cyan(logo))
 	if byline != "" {
 		fmt.Println(Dim("                   " + byline))
@@ -180,6 +247,9 @@ func PrintBanner(byline string) {
 
 // PrintCompactHeader is used for commands where the full art would be noisy.
 func PrintCompactHeader(title, subtitle string) {
+	if Quiet {
+		return
+	}
 	fmt.Printf("%s  %s\n", Cyan("◆"), Bold(title))
 	if subtitle != "" {
 		fmt.Println(Dim("   " + subtitle))

@@ -28,6 +28,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -52,32 +53,163 @@ var doctorProcessNames = []string{"ObylonBroker.exe", "ObylonCore.exe", agentExe
 
 func runDoctor(args []string) int {
 	fs, _, _ := newFlagSet("doctor")
-	profileFlag := fs.String("profile", "", "run a CPU profile over the given duration (e.g. 60s, 20m) instead of the quick health check")
-	fixFlag := fs.Bool("fix", false, "apply safe automatic repairs for anything the health check finds wrong")
+	profileFlag := fs.String("profile", "", "profile CPU usage for a duration (e.g. 60s, 5m)")
+	fixFlag := fs.Bool("fix", false, "apply only safe repairs from the standard health check")
+	deepFlag := fs.Bool("deep", false, "run the full boot/dependency forensic scan without making changes")
+	deepFixFlag := fs.Bool("deepfix", false, "run the full forensic scan and apply only safe repairs")
+	yesFlag := fs.Bool("yes", false, "skip the repair confirmation prompt (useful for automation)")
 	if err := fs.Parse(args); err != nil {
 		return usageErr("doctor", err.Error())
 	}
+	if *deepFlag && *deepFixFlag {
+		return usageErr("doctor", "choose either --deep or --deepfix, not both")
+	}
+	if *profileFlag != "" && (*deepFlag || *deepFixFlag || *fixFlag) {
+		return usageErr("doctor", "--profile cannot be combined with repair or deep-diagnostic modes")
+	}
+	if *yesFlag && !(*fixFlag || *deepFixFlag) {
+		return usageErr("doctor", "--yes only applies to --fix or --deepfix")
+	}
+	if (JSONMode() || QuietMode()) && (*fixFlag || *deepFixFlag) && !*yesFlag {
+		return usageErr("doctor", "--json/--quiet repair mode requires --yes so it never blocks on interactive confirmation")
+	}
 
-	ui.PrintBanner("S Y S T E M   D O C T O R")
+	if JSONMode() {
+		ui.SetQuiet(true)
+	}
+	ui.PrintCompactHeader("OBYLON DOCTOR", "Health, evidence, repair, and verification")
+	mode := "health check"
+	if *deepFixFlag {
+		mode = "deep diagnostics + safe repair"
+	} else if *deepFlag {
+		mode = "deep diagnostics"
+	} else if *fixFlag {
+		mode = "health check + safe repair"
+	} else if *profileFlag != "" {
+		mode = "CPU profile"
+	}
+	ui.Info("Mode: %s", mode)
+
+	if *deepFlag || *deepFixFlag {
+		findings := finalizeFindings(runDeepDiagnostics())
+		if JSONMode() && !*deepFixFlag {
+			return emitDoctorJSON("deep", findings, false)
+		}
+		printDoctorSummary(findings, true)
+		if len(findings) == 0 {
+			return 0
+		}
+		if *deepFixFlag {
+			if hasFixable(findings) && (*yesFlag || ui.Confirm(fmt.Sprintf("Apply %d safe repair(s) now?", countFixable(findings)))) {
+				applyDoctorFixes(findings)
+				return doctorPostFixScan()
+			}
+			ui.Muted("No repairs applied. Evidence was not changed.")
+		}
+		return 1
+	}
 
 	if *profileFlag != "" {
 		dur, err := time.ParseDuration(*profileFlag)
 		if err != nil {
-			return usageErr("doctor", fmt.Sprintf("--profile duration %q is not valid (try 60s, 5m, 20m): %v", *profileFlag, err))
+			return usageErr("doctor", fmt.Sprintf("%q is not a valid duration (try 60s, 5m, 20m): %v", *profileFlag, err))
 		}
 		return runDoctorProfile(dur)
 	}
 
-	findings := runDoctorHealthCheck()
-
-	if *fixFlag {
-		applyDoctorFixes(findings)
-	} else if hasFixable(findings) {
-		fmt.Println()
-		ui.Muted("Run `obylonc doctor --fix` to apply the safe repairs above automatically.")
+	findings := finalizeFindings(runDoctorHealthCheck())
+	if JSONMode() && !*fixFlag {
+		return emitDoctorJSON(mode, findings, false)
 	}
-
+	printDoctorSummary(findings, false)
+	if *fixFlag {
+		if hasFixable(findings) {
+			if *yesFlag || ui.Confirm(fmt.Sprintf("Apply %d safe repair(s) now?", countFixable(findings))) {
+				applyDoctorFixes(findings)
+			} else {
+				ui.Muted("No repairs applied.")
+			}
+		}
+	} else if hasFixable(findings) {
+		ui.Hint("Run `obylonc doctor --fix` to repair safe findings, or `obylonc doctor --deep` for forensic evidence.")
+	}
+	if JSONMode() {
+		return emitDoctorJSON(mode, findings, *fixFlag)
+	}
+	if len(findings) > 0 {
+		return 1
+	}
 	return 0
+}
+
+func doctorPostFixScan() int {
+	ui.Section("VERIFICATION")
+	ui.Muted("Rechecking the boot chain after repairs…")
+	findings := runDeepDiagnostics()
+	printDoctorSummary(findings, true)
+	if len(findings) == 0 {
+		ui.Success("Repairs verified. Obylon is healthy.")
+		return 0
+	}
+	ui.Warn("Some findings remain after repair. Review the evidence above.")
+	return 1
+}
+
+func countFixable(findings []finding) int {
+	count := 0
+	for _, f := range findings {
+		if f.fixable {
+			count++
+		}
+	}
+	return count
+}
+
+func printDoctorSummary(findings []finding, deep bool) {
+	fmt.Println()
+	if len(findings) == 0 {
+		ui.PrintBox("RESULT", []string{ui.StatusOK("No actionable issues detected"), "All completed checks have supporting evidence."}, ui.Green)
+		return
+	}
+	errors, warnings, fixes := 0, 0, 0
+	for _, f := range findings {
+		switch f.severity {
+		case sevError:
+			errors++
+		case sevWarn, sevInfo:
+			warnings++
+		}
+		if f.fixable {
+			fixes++
+		}
+	}
+	label := "HEALTH RESULT"
+	if deep {
+		label = "DEEP RESULT"
+	}
+	lines := []string{
+		fmt.Sprintf("%s %d", ui.Red(ui.IconErr), errors),
+		fmt.Sprintf("%s %d", ui.Yellow(ui.IconWarn), warnings),
+		fmt.Sprintf("%s %d safe repair(s)", ui.Cyan(ui.IconInfo), fixes),
+	}
+	ui.PrintBox(label, lines, ui.Yellow)
+
+	for _, f := range findings {
+		status := ui.Yellow(ui.IconWarn)
+		if f.severity == sevError {
+			status = ui.Red(ui.IconErr)
+		}
+		if f.severity == sevInfo {
+			status = ui.Cyan(ui.IconInfo)
+		}
+		ui.StatusLine(status, f.ID, f.message, ui.White)
+		if f.Evidence != "" {
+			ui.Hint("%s evidence: %s", f.ID, f.Evidence)
+		}
+		if f.Recommendation != "" {
+			ui.Hint("%s next: %s", f.ID, f.Recommendation)
+		}
+	}
 }
 
 type findingSeverity int
@@ -90,11 +222,88 @@ const (
 )
 
 type finding struct {
-	severity findingSeverity
-	message  string
-	fixable  bool
-	fix      func() error
-	fixLabel string
+	ID             string          `json:"id"`
+	Category       string          `json:"category"`
+	Severity       findingSeverity `json:"-"`
+	Message        string          `json:"message"`
+	Evidence       string          `json:"evidence,omitempty"`
+	Impact         string          `json:"impact,omitempty"`
+	Recommendation string          `json:"recommendation,omitempty"`
+	Fixable        bool            `json:"fixable"`
+	severity       findingSeverity
+	message        string
+	fixable        bool
+	fix            func() error
+	fixLabel       string
+}
+
+// doctorFindingJSON is the stable public schema. The internal repair callback
+// and duplicated severity fields never leak into automation output.
+type doctorFindingJSON struct {
+	ID             string `json:"id"`
+	Category       string `json:"category"`
+	Severity       string `json:"severity"`
+	Message        string `json:"message"`
+	Evidence       string `json:"evidence,omitempty"`
+	Impact         string `json:"impact,omitempty"`
+	Recommendation string `json:"recommendation,omitempty"`
+	Fixable        bool   `json:"fixable"`
+}
+
+func severityName(s findingSeverity) string {
+	switch s {
+	case sevError:
+		return "error"
+	case sevWarn:
+		return "warning"
+	case sevInfo:
+		return "info"
+	default:
+		return "ok"
+	}
+}
+
+func finalizeFindings(in []finding) []finding {
+	out := make([]finding, len(in))
+	copy(out, in)
+	for i := range out {
+		if out[i].ID == "" {
+			out[i].ID = fmt.Sprintf("OBY-%04d", i+1)
+		}
+		out[i].Severity = out[i].severity
+		out[i].Message = out[i].message
+		out[i].Fixable = out[i].fixable
+		if out[i].Recommendation == "" && out[i].fixable {
+			out[i].Recommendation = out[i].fixLabel
+		}
+	}
+	return out
+}
+
+func emitDoctorJSON(mode string, findings []finding, repaired bool) int {
+	type report struct {
+		Tool     string              `json:"tool"`
+		Version  string              `json:"version"`
+		Mode     string              `json:"mode"`
+		Status   string              `json:"status"`
+		Healthy  bool                `json:"healthy"`
+		Repaired bool                `json:"repaired"`
+		Findings []doctorFindingJSON `json:"findings"`
+	}
+	r := report{Tool: "obylonc doctor", Version: Version, Mode: mode, Status: "healthy", Healthy: len(findings) == 0, Repaired: repaired, Findings: make([]doctorFindingJSON, 0, len(findings))}
+	if len(findings) > 0 {
+		r.Status = "issues"
+	}
+	for _, f := range findings {
+		r.Findings = append(r.Findings, doctorFindingJSON{ID: f.ID, Category: f.Category, Severity: severityName(f.severity), Message: f.message, Evidence: f.Evidence, Impact: f.Impact, Recommendation: f.Recommendation, Fixable: f.fixable})
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(r)
+	if len(findings) == 0 {
+		return 0
+	}
+	return 1
 }
 
 func hasFixable(findings []finding) bool {

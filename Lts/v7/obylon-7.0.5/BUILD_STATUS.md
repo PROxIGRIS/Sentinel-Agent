@@ -89,3 +89,17 @@ The source package is validated on Linux for Python compilation/tests and Go tes
 The normal boot path no longer blocks on live hardware-fingerprint collection, Supabase session restoration, or the online boot-time license heartbeat. Identity verification, session bootstrap, and the online license check are asynchronous; Core's protected IPC gate remains closed until identity is actually verified. The persisted NODE_ID/offline identity path is used immediately while backend reconciliation happens in the background.
 
 This change is specifically intended to restore the fast post-login control-plane startup observed in earlier builds without reducing the 1-second security detection cadence. See `FIXES_7.0.5_BOOT_LATENCY.md`.
+
+## Masterclass follow-up build
+
+Build code: `OBY-MC-NR-20260913-1200-01`
+Build date: `2026-09-13`
+Version intentionally unchanged.
+
+Implemented:
+- multi-signal offline-first network recovery
+- immediate session reconstruction on network restoration
+- CLI-only Broker/Core/Brain log story translation
+- human timestamps for raw epoch / Brain timestamps
+- stable `OBY-*` diagnostic codes and Windows exit-code decoding
+- regression tests for log translation and exit-code decoding

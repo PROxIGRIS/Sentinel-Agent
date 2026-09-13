@@ -37,10 +37,47 @@ import (
 // build time with ldflags when producing a signed artifact.
 var (
 	Version     = "7.0.6-LTS"
-	BuildDate   = "2026-09-05"
-	BuildNumber = "7.0.6-202609061200"
-	Commit      = "f12411e"
+	BuildDate   = "2026-09-13"
+	BuildCode   = "OBY-MC-NR-20260913-1200-01"
+	BuildNumber = BuildCode
+	Commit      = "network-resilience+cli-log-story"
 )
+
+// Global output controls are parsed before command dispatch so every command
+// understands the same automation flags without duplicating flag definitions.
+var (
+	globalJSON    bool
+	globalQuiet   bool
+	globalNoColor bool
+)
+
+func normalizeGlobalArgs(args []string) []string {
+	clean := make([]string, 0, len(args))
+	for _, arg := range args {
+		switch arg {
+		case "--json":
+			globalJSON = true
+		case "--quiet":
+			globalQuiet = true
+		case "--no-color":
+			globalNoColor = true
+			ui.DisableColor()
+		default:
+			clean = append(clean, arg)
+		}
+	}
+	if globalJSON {
+		globalQuiet = true
+		ui.SetQuiet(true)
+	}
+	if globalQuiet {
+		ui.SetQuiet(true)
+	}
+	return clean
+}
+
+func JSONMode() bool  { return globalJSON }
+func QuietMode() bool { return globalQuiet }
 
 func runVersion(args []string) int {
 	fs, _, _ := newFlagSet("version")
@@ -48,10 +85,10 @@ func runVersion(args []string) int {
 		return usageErr("version", err.Error())
 	}
 
-	ui.PrintCompactHeader("OBYLON SENTINEL · CLI", "Endpoint administration and diagnostics")
+	ui.PrintCompactHeader("OBYLON CLI", "Endpoint administration, diagnostics, and recovery")
 	ui.PrintBox("RELEASE", []string{
 		fmt.Sprintf("Version       %s", ui.Bold(Version)),
-		fmt.Sprintf("Build number   %s", BuildNumber),
+		fmt.Sprintf("Build code     %s", BuildCode),
 		fmt.Sprintf("Build date     %s", BuildDate),
 		fmt.Sprintf("Commit         %s", ui.Dim(Commit)),
 	}, ui.Blue)
@@ -102,15 +139,12 @@ type commandEntry struct {
 // help, `admin`, and `auth request` aligned instead of maintaining several
 // subtly different command lists.
 var commands = map[string]commandEntry{
-	"activate":     {run: runActivate, brief: "Activate this workstation with a license key", scope: "license", action: "obylon.license.activate", admin: true},
-	"login":        {run: runLogin, brief: "Authenticate the CLI via browser (Device Code)", scope: "auth", action: "obylon.session.connect", admin: true},
-	"status":       {run: runStatus, brief: "Print license, node, and authorization status", scope: "read", action: "obylon.inspect", admin: false},
-	"diagnose":     {run: runDiagnose, brief: "Run connectivity, token, and signature diagnostics", scope: "diagnose", action: "obylon.diagnose", admin: false},
-	"troubleshoot": {run: runTroubleshoot, brief: "Deep dive smart diagnostic engine for boot/spawn failures", scope: "diagnose", action: "obylon.diagnose", admin: true},
-	"doctor":       {run: runDoctor, brief: "Health check, profiling, or safe repair", scope: "diagnose/update", action: "obylon.agent.update", admin: false},
-	"logs":         {run: runLogs, brief: "Tail or follow the agent's live log", scope: "evidence", action: "obylon.evidence.read", admin: false},
-	"broker-logs":  {run: runBrokerLogs, brief: "Tail or follow the broker's live log", scope: "evidence", action: "obylon.evidence.read", admin: false},
-	"core-logs":    {run: runCoreLogs, brief: "Tail or follow the core's live log", scope: "evidence", action: "obylon.evidence.read", admin: false},
+	"activate": {run: runActivate, brief: "Activate this workstation with a license key", scope: "license", action: "obylon.license.activate", admin: true},
+	"login":    {run: runLogin, brief: "Authenticate the CLI via browser (Device Code)", scope: "auth", action: "obylon.session.connect", admin: true},
+	"status":   {run: runStatus, brief: "Print license, node, and authorization status", scope: "read", action: "obylon.inspect", admin: false},
+	"diagnose": {run: runDiagnose, brief: "Run connectivity, token, and signature diagnostics", scope: "diagnose", action: "obylon.diagnose", admin: false},
+	"doctor":   {run: runDoctor, brief: "Health check, profiling, or safe repair", scope: "diagnose/update", action: "obylon.agent.update", admin: false},
+	"logs":     {run: runLogs, brief: "Inspect logs or reconstruct the human-readable boot story", scope: "evidence", action: "obylon.evidence.read", admin: false},
 	// "logs":                 {run: runLogs, brief: "Tail or follow the agent's live log", scope: "evidence", action: "obylon.evidence.read", admin: false},
 	"ai":                   {run: runAI, brief: "Ask the Obylon Support AI", scope: "read", action: "obylon.inspect", admin: false},
 	"boot":                 {run: runBoot, brief: "Check or change startup behavior", scope: "update", action: "obylon.boot.enable|obylon.boot.disable", admin: true},
@@ -125,7 +159,7 @@ var commands = map[string]commandEntry{
 
 // commandOrder controls display order in help output.
 var commandOrder = []string{
-	"activate", "login", "status", "diagnose", "doctor", "logs", "broker-logs", "core-logs", "ai",
+	"activate", "login", "status", "diagnose", "doctor", "logs", "ai",
 	"support-bundle", "boot", "reset-identity", "deactivate", "version",
 }
 
@@ -133,15 +167,12 @@ var commandOrder = []string{
 // namespace does not create an initialization cycle in the command registry.
 // It also makes the privileged surface explicit.
 var adminOperational = map[string]commandEntry{
-	"activate":     {run: runActivate, brief: "Provision a license", scope: "license", action: "obylon.license.activate", admin: true},
-	"login":        {run: runLogin, brief: "Authenticate the technician session", scope: "auth", action: "obylon.session.connect", admin: true},
-	"status":       {run: runStatus, brief: "Inspect license and node state", scope: "read", action: "obylon.inspect", admin: true},
-	"diagnose":     {run: runDiagnose, brief: "Run endpoint diagnostics", scope: "diagnose", action: "obylon.diagnose", admin: true},
-	"troubleshoot": {run: runTroubleshoot, brief: "Deep dive smart diagnostic engine", scope: "diagnose", action: "obylon.diagnose", admin: true},
-	"doctor":       {run: runDoctor, brief: "Health check / safe repair", scope: "diagnose/update", action: "obylon.agent.update", admin: true},
-	"logs":         {run: runLogs, brief: "Inspect agent logs", scope: "evidence", action: "obylon.evidence.read", admin: true},
-	"broker-logs":  {run: runBrokerLogs, brief: "Inspect broker logs", scope: "evidence", action: "obylon.evidence.read", admin: true},
-	"core-logs":    {run: runCoreLogs, brief: "Inspect core logs", scope: "evidence", action: "obylon.evidence.read", admin: true},
+	"activate": {run: runActivate, brief: "Provision a license", scope: "license", action: "obylon.license.activate", admin: true},
+	"login":    {run: runLogin, brief: "Authenticate the technician session", scope: "auth", action: "obylon.session.connect", admin: true},
+	"status":   {run: runStatus, brief: "Inspect license and node state", scope: "read", action: "obylon.inspect", admin: true},
+	"diagnose": {run: runDiagnose, brief: "Run endpoint diagnostics", scope: "diagnose", action: "obylon.diagnose", admin: true},
+	"doctor":   {run: runDoctor, brief: "Health check / safe repair", scope: "diagnose/update", action: "obylon.agent.update", admin: true},
+	"logs":     {run: runLogs, brief: "Inspect raw logs or reconstruct the boot story", scope: "evidence", action: "obylon.evidence.read", admin: true},
 	// "logs":           {run: runLogs, brief: "Inspect agent logs", scope: "evidence", action: "obylon.evidence.read", admin: true},
 	"ai":             {run: runAI, brief: "Ask support AI", scope: "read", action: "obylon.inspect", admin: true},
 	"support-bundle": {run: runSupportBundle, brief: "Collect diagnostics", scope: "diagnose/evidence", action: "obylon.evidence.read", admin: true},
@@ -155,7 +186,7 @@ var adminOperational = map[string]commandEntry{
 func Execute() int {
 	platform.EnableConsoleANSI()
 
-	args := os.Args[1:]
+	args := normalizeGlobalArgs(os.Args[1:])
 	if len(args) == 0 {
 		printHelp()
 		return 0
@@ -246,48 +277,48 @@ func printHelp() {
 	ui.PrintBanner("S E N T I N E L   C L I")
 
 	ui.PrintBox("COMMAND CENTER", []string{
-		ui.Bold("Daily operations"),
-		"  activate       Provision a license onto this endpoint",
-		"  login          Authenticate the technician session",
-		"  status         Show license, node, and auth state",
-		"  diagnose       Run connectivity and signature diagnostics",
-		"  troubleshoot   Deep dive smart diagnostic engine for boot/spawn failures",
-		"  doctor         Health check / profile / safe repair",
-		"  logs           Inspect the live agent log",
-		"  ai             Ask the Obylon support assistant",
+		ui.Bold("Everyday"),
+		"  status              One-screen endpoint health",
+		"  doctor              Diagnose, explain, repair",
+		"  logs                Inspect live evidence",
+		"  diagnose            Check enrollment and connectivity",
 		"",
-		ui.Bold("Administration"),
-		"  admin <cmd>    Explicit Admin-scope command path",
-		"  auth <cmd>     Authorization, request, and admin shortcuts",
-		"  boot           Manage boot integration",
-		"  support-bundle Collect endpoint diagnostics",
-		"  reset-identity Reset identity for imaging",
-		"  deactivate     Remove local activation",
+		ui.Bold("Lifecycle"),
+		"  activate            Provision this endpoint",
+		"  login               Authenticate a technician session",
+		"  boot                Inspect or change startup integration",
+		"  deactivate          Remove local activation",
+		"  reset-identity      Reset identity for imaging",
 		"",
-		ui.Bold("Inspection"),
-		"  version        Print exact build metadata",
+		ui.Bold("Support"),
+		"  support-bundle      Build a sanitized diagnostic bundle",
+		"  ai                  Ask the Obylon support assistant",
+		"  version             Print exact build metadata",
 	}, ui.Cyan)
 
-	ui.Section("Permission model")
-	fmt.Println("  read                 non-destructive inspection")
-	fmt.Println("  diagnose             diagnostics and health inspection")
-	fmt.Println("  evidence             log / forensic evidence access")
-	fmt.Println("  update               endpoint configuration and lifecycle changes")
-	fmt.Println("  policy               policy configuration")
-	fmt.Println("  warden               enforcement actions")
-	fmt.Println("  auth / admin         Umbraxis authorization and elevated admin scope")
+	ui.Section("Doctor at a glance")
+	fmt.Println("  obylonc doctor                 fast health check")
+	fmt.Println("  obylonc doctor --deep          full forensic evidence scan")
+	fmt.Println("  obylonc doctor --fix           repair safe health findings")
+	fmt.Println("  obylonc doctor --deepfix       forensic scan + safe repair + verification")
+	fmt.Println("  obylonc doctor --profile 60s   CPU profile")
+
+	ui.Section("Automation")
+	fmt.Println("  --json              machine-readable output where supported")
+	fmt.Println("  --quiet             suppress human UI")
+	fmt.Println("  --no-color          disable ANSI styling")
+	fmt.Println("  --verbose           show additional evidence")
 
 	ui.Section("Examples")
-	fmt.Println(ui.Dim("  obylonc activate --key-file C:\\Temp\\obylon.key"))
 	fmt.Println(ui.Dim("  obylonc status"))
-	fmt.Println(ui.Dim("  obylonc auth status"))
-	fmt.Println(ui.Dim("  obylonc admin boot status"))
-	fmt.Println(ui.Dim("  obylonc admin deactivate"))
-	fmt.Println(ui.Dim("  obylonc diagnose --dev"))
+	fmt.Println(ui.Dim("  obylonc doctor --deep"))
+	fmt.Println(ui.Dim("  obylonc doctor --deepfix"))
+	fmt.Println(ui.Dim("  obylonc doctor --deep --json"))
 	fmt.Println(ui.Dim("  obylonc logs -f --level warning"))
+	fmt.Println(ui.Dim("  obylonc support-bundle"))
 	fmt.Println()
-	ui.Hint("The installer can provision a license; the CLI activation path remains available for recovery and re-provisioning.")
-	ui.Hint("Run `obylonc <command> --help` or `obylonc help <command>` for exact usage.")
+	ui.Hint("One diagnostic engine powers Doctor, support bundles, and installer preflight. No duplicate troubleshooting command.")
+	ui.Hint("Run `obylonc <command> --help` for command-specific options.")
 }
 
 func printCommandHelp(name string) {
@@ -304,7 +335,7 @@ func printCommandHelp(name string) {
 		ui.Error("unknown command %q", name)
 		return
 	}
-	ui.PrintCompactHeader("OBYLON SENTINEL · "+strings.ToUpper(name), entry.brief)
+	ui.PrintCompactHeader("OBYLON · "+strings.ToUpper(name), entry.brief)
 	ui.PrintBox("COMMAND", []string{
 		fmt.Sprintf("Usage        obylonc %s %s", name, commandUsageTail(name)),
 		fmt.Sprintf("Scope        %s", entry.scope),
@@ -323,7 +354,7 @@ func commandUsageTail(name string) string {
 		return "<LICENSE_KEY> [--key-file <path>]"
 	case "login":
 		return "[status|logout]"
-	case "diagnose", "status", "logs", "broker-logs", "core-logs", "ai", "support-bundle", "doctor", "version":
+	case "diagnose", "status", "logs", "ai", "support-bundle", "doctor", "version":
 		return "[options]"
 	case "boot":
 		return "{status|enable|disable}"
@@ -366,9 +397,9 @@ func commandHelpLines(name string) []string {
 	case "diagnose":
 		return []string{"Checks vault availability, enrollment heartbeat, server response, and license signature validity."}
 	case "doctor":
-		return []string{"Default: endpoint health check. `--profile 60s` profiles CPU. `--fix` applies only bounded repairs and requires update authorization."}
-	case "logs", "broker-logs", "core-logs":
-		return []string{"Use -f to follow. Filters: -n, --level, --grep, --no-color."}
+		return []string{"One command, four modes: health; `--deep` forensic evidence; `--fix` safe repair; `--deepfix` forensic repair + verification; `--profile` CPU profiling."}
+	case "logs":
+		return []string{"Use `--deep` to reconstruct a human-readable Broker → Core → Brain story with timestamps and OBY-* diagnostic codes. Use `-f` to follow raw logs."}
 	case "ai":
 		return []string{"Technical support assistant for activation, deployment, licensing, logs, and diagnostics."}
 	case "boot":
@@ -392,7 +423,7 @@ func printAdminHelp() {
 	ui.PrintCompactHeader("OBYLON SENTINEL · ADMIN", "Explicit administrative command namespace")
 	fmt.Println("Usage: obylonc admin <command> [options]")
 	fmt.Println()
-	adminOrder := []string{"activate", "status", "diagnose", "troubleshoot", "doctor", "logs", "broker-logs", "core-logs", "ai", "support-bundle", "boot", "reset-identity", "deactivate"}
+	adminOrder := []string{"activate", "status", "diagnose", "doctor", "logs", "ai", "support-bundle", "boot", "reset-identity", "deactivate"}
 	for _, name := range adminOrder {
 		entry := adminOperational[name]
 		fmt.Printf("  %-16s %s  [%s]\n", name, entry.brief, entry.scope)

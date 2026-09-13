@@ -200,7 +200,7 @@ CLI Structure (obylonc):
 - obylonc status: Prints license, node name, and authorization status.
 - obylonc diagnose [--dev]: Runs network, token, and signature checks.
 - obylonc logs [-f] [-n <count>] [--level <info|warning|error>] [--grep <text>]: Tails or follows the agent log.
-- obylonc doctor [--profile <duration>] [--fix]: Health check, profiling, and bounded repair.
+- obylonc doctor [--profile <duration>] [--fix] [--deepfix]: Health check, profiling, full boot-chain diagnosis, and bounded repair.
 - obylonc support-bundle: Writes a troubleshooting support bundle.
 - obylonc boot {status|enable|disable}: Manages boot integration; enable/disable are privileged.
 - obylonc reset-identity --confirm: Wipes machine identity for imaging; privileged.
